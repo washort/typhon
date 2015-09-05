@@ -41,6 +41,7 @@ ISNEAR_1 = getAtom(u"isNear", 1)
 ISRESOLVED_1 = getAtom(u"isResolved", 1)
 ISSELFISH_1 = getAtom(u"isSelfish", 1)
 ISSELFLESS_1 = getAtom(u"isSelfless", 1)
+MAKEPROXY_3 = getAtom(u"makeProxy", 3)
 OPTPROBLEM_1 = getAtom(u"optProblem", 1)
 PROMISE_0 = getAtom(u"promise", 0)
 RESOLVE_1 = getAtom(u"resolve", 1)
@@ -80,6 +81,13 @@ def isResolved(o):
         return True
 
 
+def isBroken(o):
+    if isinstance(o, Promise):
+        return o.state() is BROKEN
+    else:
+        return False
+
+
 @autohelp
 class RefOps(Object):
     """
@@ -115,6 +123,10 @@ class RefOps(Object):
 
         if atom is ISSELFLESS_1:
             return wrapBool(self.isSelfless(args[0]))
+
+        if atom is MAKEPROXY_3:
+            from typhon.objects.proxy import makeProxy
+            return makeProxy(args[0], args[1], args[2])
 
         if atom is OPTPROBLEM_1:
             ref = args[0]
@@ -169,10 +181,7 @@ class RefOps(Object):
             return False
 
     def isBroken(self, ref):
-        if isinstance(ref, Promise):
-            return ref.state() is BROKEN
-        else:
-            return False
+        return isBroken(ref)
 
 #    def fulfillment(self, ref):
 #        ref = self.resolution(ref)
@@ -428,7 +437,7 @@ class Promise(Object):
 
     def state(self):
         if self.optProblem() is not NullObject:
-             return BROKEN
+            return BROKEN
         target = self.resolutionRef()
         if self is target:
             return EVENTUAL
@@ -448,7 +457,7 @@ class SwitchableRef(Promise):
 
     def toString(self):
         if self.isSwitchable:
-            return u"<switchable promise>"
+            return u"<Promise>"
         else:
             self.resolutionRef()
             return self._target.toString()
