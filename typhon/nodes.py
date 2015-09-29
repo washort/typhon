@@ -12,6 +12,8 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import inspect
+import textwrap
 from collections import OrderedDict
 
 from rpython.rlib import rvmprof
@@ -22,10 +24,12 @@ from rpython.rlib.rbigint import BASE10
 from typhon.atoms import getAtom
 from typhon.autohelp import autohelp
 from typhon.errors import LoadFailed, Refused, userError
+from typhon.objects.auditors import deepFrozenStamp, selfless, transparentStamp
 from typhon.objects.constants import NullObject, wrapBool
-from typhon.objects.collections import ConstList, ConstSet, monteDict
+from typhon.objects.collections import (ConstList, ConstSet, EMPTY_MAP,
+                                        monteDict, unwrapList)
 from typhon.objects.data import (BigInt, CharObject, DoubleObject, IntObject,
-                                 StrObject, unwrapStr)
+                                 StrObject, promoteToBigInt, unwrapStr)
 from typhon.objects.ejectors import throw
 from typhon.objects.meta import MetaContext
 from typhon.objects.root import Object
@@ -37,8 +41,17 @@ from typhon.smallcaps.peephole import peephole
 
 
 ADD_1 = getAtom(u"add", 1)
+AUDIT_1 = getAtom(u"audit", 1)
+COERCE_2 = getAtom(u"coerce", 2)
+GETARGS_0 = getAtom(u"getArgs", 0)
+GETASEXPR_0 = getAtom(u"getAsExpr", 0)
+GETAUDITORS_0 = getAtom(u"getAuditors", 0)
+GETBODY_0 = getAtom(u"getBody", 0)
 GETDEFNAMES_0 = getAtom(u"getDefNames", 0)
 GETDEFAULT_1 = getAtom(u"getDefault", 1)
+GETDOCSTRING_0 = getAtom(u"getDocstring", 0)
+GETEXPRS_0 = getAtom(u"getExprs", 0)
+GETGUARD_0 = getAtom(u"getGuard", 0)
 GETKEY_0 = getAtom(u"getKey", 0)
 GETMETASTATEEXPRFLAG_0 = getAtom(u"getMetaStateExprFlag", 0)
 GETMETHODNAMED_2 = getAtom(u"getMethodNamed", 2)
@@ -46,9 +59,13 @@ GETMETHODS_0 = getAtom(u"getMethods", 0)
 GETNAMESREAD_0 = getAtom(u"getNamesRead", 0)
 GETNAMESSET_0 = getAtom(u"getNamesSet", 0)
 GETNAME_0 = getAtom(u"getName", 0)
+GETNAMEDARGS_0 = getAtom(u"getNamedArgs", 0)
+GETNAMEDPATTERNS_0 = getAtom(u"getNamedPatterns", 0)
 GETNODENAME_0 = getAtom(u"getNodeName", 0)
+GETNOUN_0 = getAtom(u"getNoun", 0)
 GETPATTERN_0 = getAtom(u"getPattern", 0)
 GETPATTERNS_0 = getAtom(u"getPatterns", 0)
+GETRECEIVER_0 = getAtom(u"getReceiver", 0)
 GETRESULTGUARD_0 = getAtom(u"getResultGuard", 0)
 GETSCRIPT_0 = getAtom(u"getScript", 0)
 GETSTATICSCOPE_0 = getAtom(u"getStaticScope", 0)
@@ -58,7 +75,14 @@ GETVERB_0 = getAtom(u"getVerb", 0)
 HIDE_0 = getAtom(u"hide", 0)
 NAMESUSED_0 = getAtom(u"namesUsed", 0)
 OUTNAMES_0 = getAtom(u"outNames", 0)
-
+RUN_0 = getAtom(u"run", 0)
+RUN_1 = getAtom(u"run", 1)
+RUN_2 = getAtom(u"run", 2)
+RUN_3 = getAtom(u"run", 3)
+RUN_4 = getAtom(u"run", 4)
+RUN_5 = getAtom(u"run", 5)
+RUN_6 = getAtom(u"run", 6)
+UNCALL_0 = getAtom(u"_uncall", 0)
 
 def lt0(a, b):
     return a[0] < b[0]
@@ -247,6 +271,49 @@ class InvalidAST(LoadFailed):
     An AST was ill-formed.
     """
 
+@autohelp
+class KernelAstStamp(Object):
+    def recv(self, atom, args):
+        if atom is AUDIT_1:
+            from typhon.objects.constants import wrapBool
+            return wrapBool(True)
+        if atom is COERCE_2:
+            if args[0].auditedBy(self):
+                return args[0]
+            args[1].call(u"run", [StrObject(u"Not a KernelAst node")])
+        raise Refused(self, atom, args)
+
+kernelAstStamp = KernelAstStamp()
+
+
+def withMaker(cls):
+    """
+    Implements the SausageFactory design pattern.
+    """
+    nodeName = cls.__name__.decode("utf-8")
+    names = inspect.getargspec(cls.__init__).args[1:]
+    verb = nodeName
+    if getattr(cls, "fromMonte", None) is not None:
+        verb += ".fromMonte"
+    elif getattr(cls, "fromAST", None) is not None:
+        verb += ".fromAST"
+    arglist = u", ".join([u"args[%s]" % i for i in range(len(names))])
+    runverb = 'RUN_%s' % len(names)
+    src = """\
+    class %sMaker(Object):
+        stamps = [deepFrozenStamp]
+        def printOn(self, out):
+            out.call(u"print", [StrObject(u"<kernel make%s>")])
+        def recv(self, atom, args):
+            if atom is %s:
+                return %s(%s)
+            raise Refused(self, atom, args)
+    """ % (nodeName, nodeName, runverb, verb, arglist)
+    d = globals()
+    exec textwrap.dedent(src) in d
+    cls.nodeMaker = d[nodeName + "Maker"]()
+    return cls
+
 
 class Node(Object):
     """
@@ -254,6 +321,11 @@ class Node(Object):
     """
 
     _immutable_ = True
+
+    stamps = [selfless, transparentStamp, kernelAstStamp]
+
+    def printOn(self, out):
+        out.call(u"print", [StrObject(self.repr().decode("utf-8"))])
 
     def __repr__(self):
         b = Buffer()
@@ -271,6 +343,13 @@ class Node(Object):
         """
 
         return f(self)
+
+    def recv(self, atom, args):
+        if atom is UNCALL_0:
+            span = ConstList([NullObject])
+            return ConstList([self.nodeMaker, StrObject(u"run"),
+                              self.uncall().call(u"add", [span]), EMPTY_MAP])
+        raise Refused(self, atom, args)
 
 
 def wrapNameList(names):
@@ -300,7 +379,7 @@ class StaticScope(Object):
 
     _immutable_ = True
     _immutable_fields_ = "read[*]", "set[*]", "defs[*]", "vars[*]", "meta"
-
+    stamps = [deepFrozenStamp]
     def __init__(self, read, set, defs, vars, meta):
         self.read = read
         self.set = set
@@ -372,11 +451,43 @@ class Expr(Node):
 
     _immutable_ = True
 
+@autohelp
+class LiteralMaker(Object):
+    stamps = [deepFrozenStamp]
+    def printOn(self, out):
+        out.call(u"print", [StrObject(u"<makeLiteral>")])
+
+    def recv(self, atom, args):
+        if atom is RUN_1:
+            o = args[0]
+            if o is NullObject:
+                return Null
+            if isinstance(o, IntObject):
+                return Int(promoteToBigInt(o))
+            if isinstance(o, BigInt):
+                try:
+                    return Int(o.bi)
+                except OverflowError:
+                    pass
+            if isinstance(o, StrObject):
+                return Str(o.getString())
+            if isinstance(o, DoubleObject):
+                return Double(o.getDouble())
+            if isinstance(o, CharObject):
+                return Char(o.getChar())
+        raise Refused(self, atom, args)
+
+makeLiteral = LiteralMaker()
 
 @autohelp
 class _Null(Expr):
 
     _immutable_ = True
+
+    nodeMaker = makeLiteral
+
+    def uncall(self):
+        return ConstList([NullObject])
 
     def pretty(self, out):
         out.write("null")
@@ -394,8 +505,7 @@ class _Null(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
-
+        return Expr.recv(self, atom, args)
 
 Null = _Null()
 
@@ -411,6 +521,14 @@ class Int(Expr):
 
     def __init__(self, bi):
         self.bi = bi
+
+    nodeMaker = makeLiteral
+
+    def uncall(self):
+        try:
+            return ConstList([IntObject(self.bi.toint())])
+        except OverflowError:
+            return ConstList([BigInt(self.bi)])
 
     def pretty(self, out):
         out.write(self.bi.format(BASE10))
@@ -431,7 +549,14 @@ class Int(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+
+        if atom is GETVALUE_0:
+            try:
+                return IntObject(self.bi.toint())
+            except OverflowError:
+                return BigInt(self.bi)
+
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
@@ -441,6 +566,11 @@ class Str(Expr):
 
     def __init__(self, s):
         self._s = s
+
+    nodeMaker = makeLiteral
+
+    def uncall(self):
+        return ConstList([StrObject(self._s)])
 
     def pretty(self, out):
         out.write('"%s"' % (self._s.encode("utf-8")))
@@ -458,7 +588,10 @@ class Str(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        if atom is GETVALUE_0:
+            return StrObject(self._s)
+
+        return Expr.recv(self, atom, args)
 
 
 def strToString(s):
@@ -473,6 +606,11 @@ class Double(Expr):
 
     def __init__(self, d):
         self._d = d
+
+    nodeMaker = makeLiteral
+
+    def uncall(self):
+        return ConstList([DoubleObject(self._d)])
 
     def pretty(self, out):
         out.write("%f" % self._d)
@@ -490,7 +628,10 @@ class Double(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        if atom is GETVALUE_0:
+            return DoubleObject(self._d)
+
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
@@ -500,6 +641,11 @@ class Char(Expr):
 
     def __init__(self, c):
         self._c = c
+
+    nodeMaker = makeLiteral
+
+    def uncall(self):
+        return ConstList([CharObject(self._c)])
 
     def pretty(self, out):
         out.write("'%s'" % (self._c.encode("utf-8")))
@@ -517,7 +663,10 @@ class Char(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        if atom is GETVALUE_0:
+            return CharObject(self._c)
+
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
@@ -528,7 +677,12 @@ class Tuple(Expr):
     _immutable_fields_ = "_t[*]",
 
     def __init__(self, t):
+        from typhon.scopes.safe import theMakeList
         self._t = t
+        self.nodeMaker = theMakeList
+
+    def uncall(self):
+        return ConstList(self._t)
 
     def pretty(self, out):
         out.write("[")
@@ -565,12 +719,12 @@ class Tuple(Expr):
 
     def recv(self, atom, args):
         if atom is GETNODENAME_0:
-            return StrObject(u"LiteralExpr")
+            return StrObject(u"MethodCallExpr")
 
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 def tupleToList(t):
@@ -580,6 +734,7 @@ def tupleToList(t):
 
 
 @autohelp
+@withMaker
 class Assign(Expr):
 
     _immutable_ = True
@@ -591,6 +746,9 @@ class Assign(Expr):
     @staticmethod
     def fromAST(target, rvalue):
         return Assign(nounToString(target), rvalue)
+
+    def uncall(self):
+        return ConstList([Noun(self.target), self.rvalue])
 
     def pretty(self, out):
         out.write(self.target.encode("utf-8"))
@@ -635,10 +793,11 @@ class Assign(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Binding(Expr):
 
     _immutable_ = True
@@ -649,6 +808,9 @@ class Binding(Expr):
     @staticmethod
     def fromAST(noun):
         return Binding(nounToString(noun))
+
+    def uncall(self):
+        return ConstList([Noun(self.name)])
 
     def pretty(self, out):
         out.write("&&")
@@ -681,10 +843,11 @@ class Binding(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Call(Expr):
 
     _immutable_ = True
@@ -702,12 +865,23 @@ class Call(Expr):
         self._namedArgs = namedArgs
 
     @staticmethod
+    def fromMonte(target, verb, args, namedArgs):
+        return Call(target, strToString(verb), Tuple(unwrapList(args)),
+                    Tuple([Tuple(unwrapList(p)) for p in unwrapList(namedArgs)]))
+
+    @staticmethod
     def fromAST(target, verb, args, namedArgs):
         if not isinstance(args, Tuple):
             raise InvalidAST("args must be a tuple")
         if not isinstance(namedArgs, Tuple):
             raise InvalidAST("namedArgs must be a tuple")
         return Call(target, strToString(verb), args, namedArgs)
+
+    def uncall(self):
+        return ConstList([self._target, StrObject(self._verb),
+                          ConstList(tupleToList(self._args)),
+                          ConstList([ConstList(tupleToList(p))
+                                     for p in tupleToList(self._namedArgs)])])
 
     def pretty(self, out):
         self._target.pretty(out)
@@ -775,10 +949,24 @@ class Call(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        if atom is GETRECEIVER_0:
+            return self._target
+
+        if atom is GETVERB_0:
+            return StrObject(self._verb)
+
+        if atom is GETARGS_0:
+            return ConstList(tupleToList(self._args))
+
+        if atom is GETNAMEDARGS_0:
+            return ConstList([ConstList(tupleToList(p))
+                              for p in tupleToList(self._namedArgs)])
+
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Def(Expr):
 
     _immutable_ = True
@@ -795,6 +983,11 @@ class Def(Expr):
 
         return Def(pattern, nullToNone(ejector),
                 value if value is not None else Null)
+
+    def uncall(self):
+        return ConstList([self._p,
+                          self._e if self._e is not None else NullObject,
+                          self._v])
 
     def pretty(self, out):
         if not isinstance(self._p, VarPattern):
@@ -837,10 +1030,11 @@ class Def(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Escape(Expr):
 
     _immutable_ = True
@@ -850,6 +1044,12 @@ class Escape(Expr):
         self._node = node
         self._catchPattern = catchPattern
         self._catchNode = nullToNone(catchNode)
+
+    def uncall(self):
+        return ConstList(
+            [self._pattern, self._node,
+             self._catchPattern if self._catchPattern is not None else NullObject,
+             self._catchNode if self._catchNode is not None else NullObject])
 
     def pretty(self, out):
         out.write("escape ")
@@ -920,10 +1120,11 @@ class Escape(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Finally(Expr):
 
     _immutable_ = True
@@ -931,6 +1132,9 @@ class Finally(Expr):
     def __init__(self, block, atLast):
         self._block = block
         self._atLast = atLast
+
+    def uncall(self):
+        return ConstList([self._block, self._atLast])
 
     def pretty(self, out):
         out.writeLine("try {")
@@ -968,16 +1172,20 @@ class Finally(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Hide(Expr):
 
     _immutable_ = True
 
     def __init__(self, inner):
         self._inner = inner
+
+    def uncall(self):
+        return ConstList([self._inner])
 
     def pretty(self, out):
         out.writeLine("hide {")
@@ -1000,10 +1208,11 @@ class Hide(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class If(Expr):
 
     _immutable_ = True
@@ -1012,6 +1221,9 @@ class If(Expr):
         self._test = test
         self._then = then
         self._otherwise = otherwise
+
+    def uncall(self):
+        return ConstList([self._test, self._then, self._otherwise])
 
     def pretty(self, out):
         out.write("if (")
@@ -1057,10 +1269,11 @@ class If(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Matcher(Expr):
 
     _immutable_ = True
@@ -1071,6 +1284,9 @@ class Matcher(Expr):
 
         self._pattern = pattern
         self._block = block
+
+    def uncall(self):
+        return ConstList([self._pattern, self._block])
 
     def pretty(self, out):
         out.write("match ")
@@ -1094,13 +1310,17 @@ class Matcher(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class MetaContextExpr(Expr):
 
     _immutable_ = True
+
+    def uncall(self):
+        return ConstList([])
 
     def pretty(self, out):
         out.write("meta.context()")
@@ -1118,16 +1338,20 @@ class MetaContextExpr(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class MetaStateExpr(Expr):
 
     _immutable_ = True
 
     def pretty(self, out):
         out.write("meta.getState()")
+
+    def uncall(self):
+        return ConstList([])
 
     def compile(self, compiler):
         # XXX should this produce outers + locals when outside an object expr?
@@ -1146,10 +1370,11 @@ class MetaStateExpr(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Method(Expr):
 
     _immutable_ = True
@@ -1177,6 +1402,22 @@ class Method(Expr):
                 raise InvalidAST("Named parameters must be NamedParam nodes")
         doc = doc._s if isinstance(doc, Str) else None
         return Method(doc, strToString(verb), params, namedParams, guard, block)
+
+    @staticmethod
+    def fromMonte(doc, verb, params, namedParams, guard, block):
+        if doc is NullObject:
+            d = u""
+        else:
+            d = unwrapStr(doc)
+        return Method(d, unwrapStr(verb), unwrapList(params),
+                      unwrapList(namedParams),
+                      guard if guard is not NullObject else None, block)
+
+    def uncall(self):
+        return ConstList(
+            [StrObject(self._d if self._d else u""), StrObject(self._verb),
+             ConstList(self._ps), ConstList(self._namedParams), self._g,
+             self._b])
 
     def pretty(self, out):
         out.write("method ")
@@ -1225,6 +1466,9 @@ class Method(Expr):
         if atom is GETPATTERNS_0:
             return ConstList(self._ps)
 
+        if atom is GETNAMEDPATTERNS_0:
+            return ConstList(self._namedParams)
+
         if atom is GETRESULTGUARD_0:
             return NullObject if self._g is None else self._g
 
@@ -1234,10 +1478,14 @@ class Method(Expr):
         if atom is GETVERB_0:
             return StrObject(self._verb)
 
-        raise Refused(self, atom, args)
+        if atom is GETBODY_0:
+            return self._b
+
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Noun(Expr):
 
     _immutable_ = True
@@ -1249,6 +1497,9 @@ class Noun(Expr):
     @staticmethod
     def fromAST(noun):
         return Noun(strToString(noun))
+
+    def uncall(self):
+        return ConstList([StrObject(self.name)])
 
     def pretty(self, out):
         out.write(self.name.encode("utf-8"))
@@ -1270,6 +1521,9 @@ class Noun(Expr):
     def getStaticScope(self):
         return StaticScope([self.name], [], [], [], False)
 
+    def uncall(self):
+        return ConstList([StrObject(self.name)])
+
     def recv(self, atom, args):
         if atom is GETNAME_0:
             return StrObject(self.name)
@@ -1280,7 +1534,8 @@ class Noun(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
+
 
 
 def nounToString(n):
@@ -1290,6 +1545,7 @@ def nounToString(n):
 
 
 @autohelp
+@withMaker
 class Obj(Expr):
     """
     An object.
@@ -1307,6 +1563,10 @@ class Obj(Expr):
         self._script = script
 
     @staticmethod
+    def fromMonte(doc, name, asExpr, auditors, script):
+        return Obj.fromAST(doc, name, Tuple([asExpr] + unwrapList(auditors)), script)
+
+    @staticmethod
     def fromAST(doc, name, auditors, script):
         if not (isinstance(name, FinalPattern) or isinstance(name, IgnorePattern)):
             raise InvalidAST("Kernel object pattern must be FinalPattern or IgnorePattern")
@@ -1318,6 +1578,12 @@ class Obj(Expr):
         doc = doc._s if isinstance(doc, Str) else None
 
         return Obj(doc, name, nullToNone(auditors[0]), auditors[1:], script)
+
+    def uncall(self):
+        return ConstList(
+            [StrObject(self._d if self._d else u""), self._n,
+             self._as if self._as is not None else NullObject,
+             ConstList(self._implements), self._script])
 
     def pretty(self, out):
         out.write("object ")
@@ -1408,19 +1674,28 @@ class Obj(Expr):
         return scope
 
     def recv(self, atom, args):
+        if atom is GETDOCSTRING_0:
+            return StrObject(self._d if self._d else u"")
+
         if atom is GETNAME_0:
             return self._n
 
-        if atom is GETNODENAME_0:
-            return StrObject(u"ObjectExpr")
+        if atom is GETASEXPR_0:
+            return self._as if self._as is not None else NullObject
+
+        if atom is GETAUDITORS_0:
+             return ConstList(self._implements)
 
         if atom is GETSCRIPT_0:
             return self._script
 
+        if atom is GETNODENAME_0:
+            return StrObject(u"ObjectExpr")
+
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 class CodeScript(object):
@@ -1533,7 +1808,8 @@ class CodeScript(object):
     def lookupMethod(self, atom):
         return self.methods.get(atom, None)
 
-
+@autohelp
+@withMaker
 class Script(Expr):
 
     _immutable_ = True
@@ -1545,6 +1821,11 @@ class Script(Expr):
         self._extends = extends
         self._methods = methods
         self._matchers = matchers
+
+    @staticmethod
+    def fromMonte(extends, methods, matchers):
+        return Script.fromAST(extends, Tuple(unwrapList(methods)),
+                              Tuple(unwrapList(matchers)))
 
     @staticmethod
     def fromAST(extends, methods, matchers):
@@ -1562,6 +1843,10 @@ class Script(Expr):
                 raise InvalidAST("Script matcher isn't a Matcher")
 
         return Script(extends, methods, matchers)
+
+    def uncall(self):
+        return ConstList([NullObject, ConstList(self._methods),
+                          ConstList(self._matchers)])
 
     def pretty(self, out):
         for method in self._methods:
@@ -1600,10 +1885,11 @@ class Script(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Sequence(Expr):
 
     _immutable_ = True
@@ -1614,8 +1900,15 @@ class Sequence(Expr):
         self._l = l
 
     @staticmethod
+    def fromMonte(l):
+        return Sequence(unwrapList(l))
+
+    @staticmethod
     def fromAST(t):
         return Sequence(tupleToList(t))
+
+    def uncall(self):
+        return ConstList([ConstList(self._l)])
 
     def pretty(self, out):
         if not self._l:
@@ -1654,10 +1947,14 @@ class Sequence(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        if atom is GETEXPRS_0:
+            return ConstList(self._l)
+
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class Try(Expr):
 
     _immutable_ = True
@@ -1666,6 +1963,9 @@ class Try(Expr):
         self._first = first
         self._pattern = pattern
         self._then = then
+
+    def uncall(self):
+        return ConstList([self._first, self._pattern, self._then])
 
     def pretty(self, out):
         out.writeLine("try {")
@@ -1705,7 +2005,7 @@ class Try(Expr):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Expr.recv(self, atom, args)
 
 
 @autohelp
@@ -1726,12 +2026,16 @@ class Pattern(Expr):
 
 
 @autohelp
+@withMaker
 class BindingPattern(Pattern):
 
     _immutable_ = True
 
     def __init__(self, noun):
         self._noun = nounToString(noun)
+
+    def uncall(self):
+        return ConstList([Noun(self._noun)])
 
     def pretty(self, out):
         out.write("&&")
@@ -1752,17 +2056,24 @@ class BindingPattern(Pattern):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class FinalPattern(Pattern):
 
     _immutable_ = True
 
     def __init__(self, noun, guard):
+        self._actualNoun = noun
         self._n = nounToString(noun)
         self._g = nullToNone(guard)
+
+    def uncall(self):
+        return ConstList(
+            [self._actualNoun,
+             self._g if self._g is not None else NullObject])
 
     def pretty(self, out):
         out.write(self._n.encode("utf-8"))
@@ -1792,14 +2103,20 @@ class FinalPattern(Pattern):
     def recv(self, atom, args):
         if atom is GETNODENAME_0:
             return StrObject(u"FinalPattern")
-
+        if atom is GETNOUN_0:
+            return self._actualNoun
+        if atom is GETGUARD_0:
+            if self._g is None:
+                return NullObject
+            return self._g
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class IgnorePattern(Pattern):
 
     _immutable_ = True
@@ -1812,6 +2129,9 @@ class IgnorePattern(Pattern):
         if self._g is not None:
             out.write(" :")
             self._g.pretty(out)
+
+    def uncall(self):
+        return ConstList([self._g if self._g is not None else NullObject])
 
     def compile(self, compiler):
         # [specimen ej]
@@ -1844,18 +2164,23 @@ class IgnorePattern(Pattern):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class ListPattern(Pattern):
 
     _immutable_ = True
 
     _immutable_fields_ = "_ps[*]",
 
-    def __init__(self, patterns):
+    def __init__(self, patterns, tail):
         self._ps = patterns
+
+    @staticmethod
+    def fromMonte(patterns, tail):
+        return ListPattern.fromAST(unwrapList(patterns), tail)
 
     @staticmethod
     def fromAST(patterns, tail):
@@ -1863,7 +2188,12 @@ class ListPattern(Pattern):
             if p is None:
                 raise InvalidAST("List subpattern cannot be None")
 
-        return ListPattern(patterns)
+        if tail is not None:
+            raise InvalidAST("Kernel list patterns have no tail")
+        return ListPattern(patterns, None)
+
+    def uncall(self):
+        return ConstList([ConstList(self._ps), NullObject])
 
     def pretty(self, out):
         out.write("[")
@@ -1897,9 +2227,10 @@ class ListPattern(Pattern):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
-
+@autohelp
+@withMaker
 class NamedParam(Pattern):
 
     _immutable_ = True
@@ -1920,6 +2251,11 @@ class NamedParam(Pattern):
         if self._default is not None:
             out.write(" := ")
             self._default.pretty(out)
+
+    def uncall(self):
+        return ConstList(
+            [self._k, self._p,
+             self._default if self._default is not None else NullObject])
 
     def getStaticScope(self):
         scope = self._k.getStaticScope().add(self._p.getStaticScope())
@@ -1942,7 +2278,7 @@ class NamedParam(Pattern):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
     def compile(self, compiler):
         # [argmap]
@@ -1965,6 +2301,7 @@ class NamedParam(Pattern):
 
 
 @autohelp
+@withMaker
 class VarPattern(Pattern):
 
     _immutable_ = True
@@ -1972,6 +2309,11 @@ class VarPattern(Pattern):
     def __init__(self, noun, guard):
         self._n = nounToString(noun)
         self._g = nullToNone(guard)
+
+    def uncall(self):
+        return ConstList(
+            [Noun(self._n),
+             self._g if self._g is not None else NullObject])
 
     def pretty(self, out):
         out.write("var ")
@@ -2005,10 +2347,11 @@ class VarPattern(Pattern):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
 
 @autohelp
+@withMaker
 class ViaPattern(Pattern):
 
     _immutable_ = True
@@ -2018,6 +2361,9 @@ class ViaPattern(Pattern):
         if pattern is None:
             raise InvalidAST("Inner pattern of via cannot be None")
         self._pattern = pattern
+
+    def uncall(self):
+        return ConstList([self._expr, self._pattern])
 
     def pretty(self, out):
         out.write("via (")
@@ -2054,7 +2400,7 @@ class ViaPattern(Pattern):
         if atom is GETSTATICSCOPE_0:
             return self.getStaticScope()
 
-        raise Refused(self, atom, args)
+        return Pattern.recv(self, atom, args)
 
 
 def formatName(p):
