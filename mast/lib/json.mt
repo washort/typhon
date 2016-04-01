@@ -380,6 +380,8 @@ object JSON as DeepFrozen:
                 JSON.encodeStr(s)
             match c :Char:
                 JSON.encodeStr(c.asString())
+            match ==null:
+                "null"
             match _:
                 throw.eject(ej, `$specimen isn't representable in JSON`)
 
