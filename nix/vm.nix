@@ -36,10 +36,10 @@ stdenv.mkDerivation {
   doCheck = true;
   checkPhase = "trial typhon.test";
   installPhase = ''
+    strip mt-typhon
     mkdir $out
     cp mt-typhon $out/
     '';
-  dontStrip = true;
   src = let loc = part: (toString ./..) + part;
    in builtins.filterSource (path: type:
     let p = toString path;

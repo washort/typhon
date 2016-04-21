@@ -3,7 +3,8 @@ let
   nixpkgs = import <nixpkgs> { inherit system; };
   lib = nixpkgs.lib;
   typhon = with nixpkgs; rec {
-    typhonVm = callPackage ./nix/vm.nix { buildJIT = false; };
+    typhonVm = callPackage ./nix/vm.nix { buildJIT = false;
+        libsodium = libsodium.overrideDerivation (oldAttrs: {stripAllList = "lib";});};
     typhonVmCrashy = callPackage ./nix/vm.nix { buildJIT = true; };
     mast = callPackage ./nix/mast.nix { typhonVm = typhonVm; };
     # XXX broken for unknown reasons
