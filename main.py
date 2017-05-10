@@ -33,7 +33,7 @@ from typhon.objects.collections.maps import ConstMap, monteMap, unwrapMap
 from typhon.objects.constants import NullObject
 from typhon.objects.data import IntObject, StrObject, unwrapStr
 from typhon.objects.guards import anyGuard
-from typhon.objects.refs import resolution
+from typhon.objects.refs import resolution, isResolved
 from typhon.objects.root import tieMirandaKnot
 from typhon.objects.slots import finalBinding
 from typhon.objects.timeit import benchmarkSettings
@@ -86,14 +86,19 @@ def loadPrelude(config, recorder, vat):
     return prelude
 
 
-def runUntilDone(vatManager, uv_loop, recorder):
+def runUntilDone(vatManager, uv_loop, recorder, result):
     # This may take a while.
+
+    # "Done" is defined as 'result' (i.e. the value returned from the
+    # entrypoint) becoming resolved.
     anyVatHasTurns = vatManager.anyVatHasTurns()
     while anyVatHasTurns or ruv.loopAlive(uv_loop):
         for vat in vatManager.vats:
             if vat.hasTurns():
                 with scopedVat(vat) as vat:
                     with recorder.context("Time spent in vats"):
+                        if result is None or result.isResolved():
+                            return
                         vat.takeSomeTurns()
 
         if ruv.loopAlive(uv_loop):
@@ -266,7 +271,7 @@ def runTyphon(argv):
         # Update loop timing information.
         ruv.update_time(uv_loop)
         try:
-            runUntilDone(vatManager, uv_loop, recorder)
+            runUntilDone(vatManager, uv_loop, recorder, result)
             rv = resolution(result) if result is not None else NullObject
             if isinstance(rv, IntObject):
                 exitStatus = rv.getInt()
