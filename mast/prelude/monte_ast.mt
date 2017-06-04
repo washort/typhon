@@ -1,4 +1,5 @@
 import "boot" =~ [=> DeepFrozenStamp, => TransparentStamp, => KernelAstStamp]
+import "ast_printer" =~ [=> printerActions]
 exports (astBuilder)
 
 def MONTE_KEYWORDS :List[Str] := [
@@ -122,6 +123,9 @@ def transformAll(nodes, f) as DeepFrozenStamp:
         results.push(n.transform(f))
     return results.snapshot()
 
+object astStamp as DeepFrozenStamp:
+    to audit(_audition):
+        return true
 def isIdentifier(name :Str) :Bool as DeepFrozenStamp:
     if (MONTE_KEYWORDS.contains(name.toLowerCase())):
         return false
@@ -191,9 +195,6 @@ def printObjectSuiteOn(leaderFn, docstring, suite, out, priority) as DeepFrozenS
             suite.subPrintOn(o, p)
             }, false, true, out, priority)
 
-object astStamp as DeepFrozenStamp:
-    to audit(_audition):
-        return true
 
 object Ast as DeepFrozenStamp:
     to coerce(specimen, ej):
@@ -269,16 +270,18 @@ def astWrapper(node, maker, args, span, &scope, nodeName, transformArgs) as Deep
         to _uncall():
             return [maker, "run", args + [span], [].asMap()]
         to _printOn(out):
-            node.subPrintOn(out, 0)
-
+            astNode.subPrintOn(out, 0)
+        to subPrintOn(out, priority):
+            if (printerActions.contains(nodeName)):
+                printerActions[nodeName](astNode, out, priority)
+            else:
+                node.subPrintOn(out, priority)
 # 'value' is unguarded because the optimized uses LiteralExprs for non-literal
 # constants.
 def makeLiteralExpr(value, span) as DeepFrozenStamp:
     object literalExpr:
         to getValue():
             return value
-        to subPrintOn(out, _priority):
-            out.quote(value)
     return astWrapper(literalExpr, makeLiteralExpr, [value], span,
         &emptyScope, "LiteralExpr", fn _f {[value]})
 
@@ -286,12 +289,6 @@ def makeNounExpr(name :Str, span) as DeepFrozenStamp:
     object nounExpr:
         to getName():
             return name
-        to subPrintOn(out, _priority):
-            if (isIdentifier(name)):
-                out.print(name)
-            else:
-                out.print("::")
-                out.quote(name)
     def scope
     def node := astWrapper(nounExpr, makeNounExpr, [name], span,
          &scope, "NounExpr", fn _f {[name]})
@@ -333,9 +330,6 @@ def makeSlotExpr(noun :Noun, span) as DeepFrozenStamp:
     object slotExpr:
         to getNoun():
             return noun
-        to subPrintOn(out, _priority):
-            out.print("&")
-            out.print(noun)
     return astWrapper(slotExpr, makeSlotExpr, [noun], span,
         &scope, "SlotExpr", fn f {[noun.transform(f)]})
 
@@ -384,19 +378,6 @@ def makeSeqExpr(exprs :List[Expr], span) as DeepFrozenStamp:
     object seqExpr:
         to getExprs():
             return fixedExprs
-        to subPrintOn(out, priority):
-            if (priority > priorities["braceExpr"]):
-                out.print("(")
-            var first := true
-            if (priorities["braceExpr"] >= priority && fixedExprs == []):
-                out.print("pass")
-            for e in (fixedExprs):
-                if (!first):
-                    out.println("")
-                first := false
-                e.subPrintOn(out, priority.min(priorities["braceExpr"]))
-            if (priority > priorities["braceExpr"]):
-                out.print(")")
     return astWrapper(seqExpr, makeSeqExpr, [fixedExprs], span, &scope,
                       "SeqExpr", fn f {[transformAll(fixedExprs, f)]})
 
@@ -418,17 +399,6 @@ def makeModule(importsList, exportsList, body, span) as DeepFrozenStamp:
             return exportsList
         to getBody():
             return body
-        to subPrintOn(out, _priority):
-            for [petname, patt] in (importsList):
-                out.print("import ")
-                out.quote(petname)
-                out.print(" =~ ")
-                out.println(patt)
-            if (exportsList.size() > 0):
-                out.print("exports ")
-                printListOn("(", exportsList, ", ", ")", out, priorities["braceExpr"])
-                out.println("")
-            body.subPrintOn(out, priorities["indentExpr"])
     return astWrapper(module, makeModule, [importsList, exportsList, body], span,
                       &scope, "Module", fn f {[
                           [for [n, v] in (importsList) [n, v.transform(f)]],
@@ -443,10 +413,6 @@ def makeNamedArg(k :Expr, v :Expr, span) as DeepFrozenStamp:
             return k
         to getValue():
             return v
-        to subPrintOn(out, _priority):
-            k.subPrintOn(out, priorities["prim"])
-            out.print(" => ")
-            v.subPrintOn(out, priorities["braceExpr"])
     return astWrapper(namedArg, makeNamedArg, [k, v], span, &scope, "NamedArg",
                       fn f {[k.transform(f), v.transform(f)]})
 
@@ -455,9 +421,6 @@ def makeNamedArgExport(v :Expr, span) as DeepFrozenStamp:
     object namedArgExport:
         to getValue():
             return v
-        to subPrintOn(out, _priority):
-            out.print(" => ")
-            v.subPrintOn(out, "braceExpr")
     return astWrapper(namedArgExport, makeNamedArgExport, [v], span, &scope, "NamedArgExport",
                       fn f {[v.transform(f)]})
 
@@ -474,18 +437,6 @@ def makeMethodCallExpr(rcvr :Expr, verb :Str, arglist :List[Expr],
             return arglist
         to getNamedArgs():
             return namedArgs
-        to subPrintOn(out, priority :Int):
-            if (priorities["call"] < priority):
-                out.print("(")
-            rcvr.subPrintOn(out, priorities["call"])
-            out.print(".")
-            if (isIdentifier(verb)):
-                out.print(verb)
-            else:
-                out.quote(verb)
-            printListOn("(", arglist + namedArgs, ", ", ")", out, priorities["braceExpr"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(methodCallExpr, makeMethodCallExpr,
         [rcvr, verb, arglist, namedArgs], span, &scope, "MethodCallExpr",
         fn f {[rcvr.transform(f), verb, transformAll(arglist, f),
@@ -501,13 +452,6 @@ def makeFunCallExpr(receiver :Expr, args :List[Expr],
             return args
         to getNamedArgs():
             return namedArgs
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            receiver.subPrintOn(out, priorities["call"])
-            printListOn("(", args + namedArgs, ", ", ")", out, priorities["braceExpr"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(funCallExpr, makeFunCallExpr, [receiver, args, namedArgs], span,
         &scope, "FunCallExpr", fn f {[receiver.transform(f), transformAll(args, f),
                                       transformAll(namedArgs, f)]})
@@ -524,18 +468,6 @@ def makeSendExpr(rcvr :Ast, verb :Str, arglist :List[Ast],
             return arglist
         to getNamedArgs():
             return namedArgs
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            rcvr.subPrintOn(out, priorities["call"])
-            out.print(" <- ")
-            if (isIdentifier(verb)):
-                out.print(verb)
-            else:
-                out.quote(verb)
-            printListOn("(", arglist + namedArgs, ", ", ")", out, priorities["braceExpr"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(sendExpr, makeSendExpr,
         [rcvr, verb, arglist, namedArgs], span, &scope, "SendExpr",
         fn f {[rcvr.transform(f), verb, transformAll(arglist, f),
@@ -551,13 +483,6 @@ def makeFunSendExpr(receiver :Expr, args :List[Expr],
             return args
         to getNamedArgs():
             return namedArgs
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            receiver.subPrintOn(out, priorities["call"])
-            printListOn(" <- (", args + namedArgs, ", ", ")", out, priorities["braceExpr"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(funSendExpr, makeFunSendExpr, [receiver, args, namedArgs], span,
         &scope, "FunSendExpr", fn f {[receiver.transform(f), transformAll(args, f), transformAll(namedArgs, f)]})
 
@@ -568,9 +493,6 @@ def makeGetExpr(receiver :Expr, indices :List[Expr], span) as DeepFrozenStamp:
             return receiver
         to getIndices():
             return indices
-        to subPrintOn(out, _priority):
-            receiver.subPrintOn(out, priorities["call"])
-            printListOn("[", indices, ", ", "]", out, priorities["braceExpr"])
 
     return astWrapper(getExpr, makeGetExpr, [receiver, indices], span,
         &scope, "GetExpr", fn f {[receiver.transform(f), transformAll(indices, f)]})
@@ -583,14 +505,6 @@ def makeAndExpr(left :Expr, right :Expr, span) as DeepFrozenStamp:
             return left
         to getRight():
             return right
-        to subPrintOn(out, priority):
-            if (priorities["logicalAnd"] < priority):
-                out.print("(")
-            left.subPrintOn(out, priorities["logicalAnd"])
-            out.print(" && ")
-            right.subPrintOn(out, priorities["logicalAnd"])
-            if (priorities["logicalAnd"] < priority):
-                out.print(")")
     return astWrapper(andExpr, makeAndExpr, [left, right], span,
         &scope, "AndExpr", fn f {[left.transform(f), right.transform(f)]})
 
@@ -602,14 +516,6 @@ def makeOrExpr(left :Expr, right :Expr, span) as DeepFrozenStamp:
             return left
         to getRight():
             return right
-        to subPrintOn(out, priority):
-            if (priorities["logicalOr"] < priority):
-                out.print("(")
-            left.subPrintOn(out, priorities["logicalOr"])
-            out.print(" || ")
-            right.subPrintOn(out, priorities["logicalOr"])
-            if (priorities["logicalOr"] < priority):
-                out.print(")")
     return astWrapper(orExpr, makeOrExpr, [left, right], span,
         &scope, "OrExpr", fn f {[left.transform(f), right.transform(f)]})
 
@@ -638,19 +544,10 @@ def makeBinaryExpr(left :Expr, op :Str, right :Expr, span) as DeepFrozenStamp:
             return op
         to getOpName():
             return operatorsToNamePrio[op][0]
+        to getPriorityName():
+            return operatorsToNamePrio[op][1]
         to getRight():
             return right
-        to subPrintOn(out, priority):
-            def opPrio := priorities[operatorsToNamePrio[op][1]]
-            if (opPrio < priority):
-                out.print("(")
-            left.subPrintOn(out, opPrio)
-            out.print(" ")
-            out.print(op)
-            out.print(" ")
-            right.subPrintOn(out, opPrio)
-            if (opPrio < priority):
-                out.print(")")
     return astWrapper(binaryExpr, makeBinaryExpr, [left, op, right], span,
         &scope, "BinaryExpr", fn f {[left.transform(f), op, right.transform(f)]})
 
@@ -671,16 +568,6 @@ def makeCompareExpr(left :Expr, op :Str, right :Expr, span) as DeepFrozenStamp:
             return comparatorsToName[op]
         to getRight():
             return right
-        to subPrintOn(out, priority):
-            if (priorities["comp"] < priority):
-                out.print("(")
-            left.subPrintOn(out, priorities["comp"])
-            out.print(" ")
-            out.print(op)
-            out.print(" ")
-            right.subPrintOn(out, priorities["comp"])
-            if (priorities["comp"] < priority):
-                out.print(")")
     return astWrapper(compareExpr, makeCompareExpr, [left, op, right], span,
         &scope, "CompareExpr", fn f {[left.transform(f), op, right.transform(f)]})
 
@@ -699,14 +586,6 @@ def makeRangeExpr(left :Expr, op :Str, right :Expr, span) as DeepFrozenStamp:
                 return "till"
         to getRight():
             return right
-        to subPrintOn(out, priority):
-            if (priorities["interval"] < priority):
-                out.print("(")
-            left.subPrintOn(out, priorities["interval"])
-            out.print(op)
-            right.subPrintOn(out, priorities["interval"])
-            if (priorities["interval"] < priority):
-                out.print(")")
     return astWrapper(rangeExpr, makeRangeExpr, [left, op, right], span,
         &scope, "RangeExpr", fn f {[left.transform(f), op, right.transform(f)]})
 
@@ -720,17 +599,6 @@ def makeSameExpr(left :Expr, right :Expr, direction :Bool, span) as DeepFrozenSt
             return direction
         to getRight():
             return right
-        to subPrintOn(out, priority):
-            if (priorities["comp"] < priority):
-                out.print("(")
-            left.subPrintOn(out, priorities["comp"])
-            if (direction):
-                out.print(" == ")
-            else:
-                out.print(" != ")
-            right.subPrintOn(out, priorities["comp"])
-            if (priorities["comp"] < priority):
-                out.print(")")
     return astWrapper(sameExpr, makeSameExpr, [left, right, direction], span,
         &scope, "SameExpr", fn f {[left.transform(f), right.transform(f), direction]})
 
@@ -742,14 +610,6 @@ def makeMatchBindExpr(specimen :Expr, pattern :Pattern, span) as DeepFrozenStamp
             return specimen
         to getPattern():
             return pattern
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            specimen.subPrintOn(out, priorities["call"])
-            out.print(" =~ ")
-            pattern.subPrintOn(out, priorities["pattern"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(matchBindExpr, makeMatchBindExpr, [specimen, pattern], span,
         &scope, "MatchBindExpr", fn f {[specimen.transform(f), pattern.transform(f)]})
 
@@ -761,14 +621,6 @@ def makeMismatchExpr(specimen :Expr, pattern :Pattern, span) as DeepFrozenStamp:
             return specimen
         to getPattern():
             return pattern
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            specimen.subPrintOn(out, priorities["call"])
-            out.print(" !~ ")
-            pattern.subPrintOn(out, priorities["pattern"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(mismatchExpr, makeMismatchExpr, [specimen, pattern], span,
         &scope, "MismatchExpr", fn f {[specimen.transform(f), pattern.transform(f)]})
 
@@ -784,13 +636,6 @@ def makePrefixExpr(op :Str, receiver :Expr, span) as DeepFrozenStamp:
             return unaryOperatorsToName[op]
         to getReceiver():
             return receiver
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            out.print(op)
-            receiver.subPrintOn(out, priorities["call"])
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(prefixExpr, makePrefixExpr, [op, receiver], span,
         &scope, "PrefixExpr", fn f {[op, receiver.transform(f)]})
 
@@ -802,14 +647,6 @@ def makeCoerceExpr(specimen :Expr, guard :NullOk[Expr], span) as DeepFrozenStamp
             return specimen
         to getGuard():
             return guard
-        to subPrintOn(out, priority):
-            if (priorities["coerce"] < priority):
-                out.print("(")
-            specimen.subPrintOn(out, priorities["coerce"])
-            out.print(" :")
-            guard.subPrintOn(out, priorities["prim"])
-            if (priorities["coerce"] < priority):
-                out.print(")")
     return astWrapper(coerceExpr, makeCoerceExpr, [specimen, guard], span,
         &scope, "CoerceExpr", fn f {[specimen.transform(f), guard.transform(f)]})
 
@@ -822,20 +659,6 @@ def makeCurryExpr(receiver :Expr, verb :Str, isSend :Bool, span) as DeepFrozenSt
             return verb
         to getIsSend():
             return isSend
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            receiver.subPrintOn(out, priorities["call"])
-            if (isSend):
-                out.print(" <- ")
-            else:
-                out.print(".")
-            if (isIdentifier(verb)):
-                out.print(verb)
-            else:
-                out.quote(verb)
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(curryExpr, makeCurryExpr, [receiver, verb, isSend], span,
         &scope, "CurryExpr", fn f {[receiver.transform(f), verb, isSend]})
 
@@ -846,15 +669,6 @@ def makeExitExpr(name :Str, value :NullOk[Expr], span) as DeepFrozenStamp:
             return name
         to getValue():
             return value
-        to subPrintOn(out, priority):
-            if (priorities["call"] < priority):
-                out.print("(")
-            out.print(name)
-            if (value != null):
-                out.print(" ")
-                value.subPrintOn(out, priority)
-            if (priorities["call"] < priority):
-                out.print(")")
     return astWrapper(exitExpr, makeExitExpr, [name, value], span,
         &scope, "ExitExpr", fn f {[name, maybeTransform(value, f)]})
 
@@ -863,13 +677,6 @@ def makeForwardExpr(patt :Ast["FinalPattern"], span) as DeepFrozenStamp:
     object forwardExpr:
         to getNoun():
             return patt.getNoun()
-        to subPrintOn(out, priority):
-            if (priorities["assign"] < priority):
-                out.print("(")
-            out.print("def ")
-            patt.subPrintOn(out, priorities["prim"])
-            if (priorities["assign"] < priority):
-                out.print(")")
     return astWrapper(forwardExpr, makeForwardExpr, [patt], span,
         &scope, "ForwardExpr", fn f {[patt.transform(f)]})
 
@@ -890,12 +697,6 @@ def makeVarPattern(noun :Noun, guard :NullOk[Expr], span) as DeepFrozenStamp:
         to refutable() :Bool:
             return guard != null
 
-        to subPrintOn(out, priority):
-            out.print("var ")
-            noun.subPrintOn(out, priority)
-            if (guard != null):
-                out.print(" :")
-                guard.subPrintOn(out, priorities["order"])
     return astWrapper(varPattern, makeVarPattern, [noun, guard], span,
         &scope, "VarPattern",
         fn f {[noun.transform(f), maybeTransform(guard, f)]})
@@ -912,12 +713,6 @@ def makeBindPattern(noun :Noun, guard :NullOk[Expr], span) as DeepFrozenStamp:
         to refutable() :Bool:
             return guard != null
 
-        to subPrintOn(out, priority):
-            out.print("bind ")
-            noun.subPrintOn(out, priority)
-            if (guard != null):
-                out.print(" :")
-                guard.subPrintOn(out, priorities["order"])
     return astWrapper(bindPattern, makeBindPattern, [noun, guard], span,
         &scope, "BindPattern", fn f {[noun.transform(f), maybeTransform(guard, f)]})
 
@@ -939,19 +734,6 @@ def makeDefExpr(pattern :Pattern, exit_ :NullOk[Expr], expr :Expr, span) as Deep
         to withExpr(newExpr :Expr):
             return makeDefExpr(pattern, exit_, newExpr, span)
 
-        to subPrintOn(out, priority):
-            if (priorities["assign"] < priority):
-                out.print("(")
-            if (!["VarPattern", "BindPattern"].contains(pattern.getNodeName())):
-                out.print("def ")
-            pattern.subPrintOn(out, priorities["pattern"])
-            if (exit_ != null):
-                out.print(" exit ")
-                exit_.subPrintOn(out, priorities["call"])
-            out.print(" := ")
-            expr.subPrintOn(out, priorities["assign"])
-            if (priorities["assign"] < priority):
-                out.print(")")
     return astWrapper(defExpr, makeDefExpr, [pattern, exit_, expr], span,
         &scope, "DefExpr", fn f {[pattern.transform(f), if (exit_ == null) {null} else {exit_.transform(f)}, expr.transform(f)]})
 
@@ -968,14 +750,6 @@ def makeAssignExpr(lvalue :Expr, rvalue :Expr, span) as DeepFrozenStamp:
             return lvalue
         to getRvalue():
             return rvalue
-        to subPrintOn(out, priority):
-            if (priorities["assign"] < priority):
-                out.print("(")
-            lvalue.subPrintOn(out, priorities["call"])
-            out.print(" := ")
-            rvalue.subPrintOn(out, priorities["assign"])
-            if (priorities["assign"] < priority):
-                out.print(")")
     return astWrapper(assignExpr, makeAssignExpr, [lvalue, rvalue], span,
         &scope, "AssignExpr", fn f {[lvalue.transform(f), rvalue.transform(f)]})
 
@@ -992,19 +766,6 @@ def makeVerbAssignExpr(verb :Str, lvalue :Expr, rvalues :List[Expr], span) as De
             return lvalue
         to getRvalues():
             return rvalues
-        to subPrintOn(out, priority):
-            if (priorities["assign"] < priority):
-                out.print("(")
-            lvalue.subPrintOn(out, priorities["call"])
-            out.print(" ")
-            if (isIdentifier(verb)):
-                out.print(verb)
-            else:
-                out.quote(verb)
-            out.print("= ")
-            printListOn("(", rvalues, ", ", ")", out, priorities["assign"])
-            if (priorities["assign"] < priority):
-                out.print(")")
     return astWrapper(verbAssignExpr, makeVerbAssignExpr, [verb, lvalue, rvalues], span,
         &scope, "VerbAssignExpr", fn f {[verb, lvalue.transform(f), transformAll(rvalues, f)]})
 
@@ -1027,16 +788,6 @@ def makeAugAssignExpr(op :Str, lvalue :Expr, rvalue :Expr, span) as DeepFrozenSt
             return lvalue
         to getRvalue():
             return rvalue
-        to subPrintOn(out, priority):
-            if (priorities["assign"] < priority):
-                out.print("(")
-            lvalue.subPrintOn(out, priorities["call"])
-            out.print(" ")
-            out.print(op)
-            out.print("= ")
-            rvalue.subPrintOn(out, priorities["assign"])
-            if (priorities["assign"] < priority):
-                out.print(")")
     return astWrapper(augAssignExpr, makeAugAssignExpr, [op, lvalue, rvalue], span,
         &scope, "AugAssignExpr", fn f {[op, lvalue.transform(f), rvalue.transform(f)]})
 
