@@ -1,5 +1,5 @@
 import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
-exports (makeMASTContext)
+exports (makeMASTContext, readMAST)
 
 def packInt(var i :(Int >= 0)) :Bytes as DeepFrozen:
     if (i == 0):
@@ -32,12 +32,14 @@ def packSpan(s) :Bytes as DeepFrozen:
     def endCol := packInt(s.getEndCol())
     return type + startLine + startCol + endLine + endCol
 
+def MAGIC :Bytes := b`Mont$\xe0MAST$\x01`
+
 def makeMASTContext() as DeepFrozen:
     "Make a MAST context."
 
     var exprIndex :Int := 0
     var pattIndex :Int := 0
-    def streams := [b`Mont$\xe0MAST$\x01`].diverge()
+    def streams := [MAGIC].diverge()
 
     return object MASTContext:
         "A MAST context."
@@ -217,3 +219,195 @@ def makeMASTContext() as DeepFrozen:
                 match =="BindingPattern":
                     def name := packStr(patt.getNoun().getName())
                     b`PB$name`
+
+
+def makeMASTStream(bytes, withSpans, filename) as DeepFrozen:
+    var index := 0
+    return object mastStream:
+        to exhausted():
+            return index >= bytes.size()
+
+        to nextByte(=> FAIL):
+            if (mastStream.exhausted()):
+                throw.eject(FAIL, `nextByte: Buffer underrun while streaming`)
+            def rv := bytes[index]
+            index += 1
+            return rv
+
+        to nextBytes(count :(Int > 0), => FAIL):
+            if (mastStream.exhausted()):
+                throw.eject(FAIL, "nextBytes: Buffer underrun while streaming")
+            def rv := bytes.slice(index, index + count)
+            index += count
+            return rv
+
+        to nextDouble(=> FAIL):
+            return _makeDouble.fromBytes(mastStream.nextBytes(8), FAIL)
+
+        to nextVarInt(=> FAIL):
+            var shift := 0
+            var bi := 0
+            var cont := true
+            while (cont):
+                def b := mastStream.nextByte(=> FAIL)
+                bi |= (b & 0x7f) << shift
+                shift += 7
+                cont := (b & 0x80) != 0
+            return bi
+
+        to nextInt():
+            return mastStream.nextVarInt()
+
+        to nextStr(=> FAIL):
+            def size := mastStream.nextInt(=> FAIL)
+            if (size == 0):
+                return ""
+            def via (UTF8.decode) s exit FAIL := mastStream.nextBytes(size)
+            return s
+
+        to nextSpan(=> FAIL):
+            if (!withSpans):
+                return null
+            def b := mastStream.nextByte()
+            def oneToOne := if (b == 'S'.asInteger()) { true
+            } else if (b == 'B'.asInteger()) { false
+            } else {throw.eject(FAIL, `Couldn't decode span tag $b`)}
+            return _makeSourceSpan(filename, oneToOne,
+                                   mastStream.nextInt(),
+                                   mastStream.nextInt(),
+                                   mastStream.nextInt(),
+                                   mastStream.nextInt())
+def makeMASTReaderContext(builder) as DeepFrozen:
+    def exprs := [].diverge()
+    def patts := [].diverge()
+    def Expr := builder.getExprGuard()
+    def Pattern := builder.getPatternGuard()
+    def Ast := builder.getAstGuard()
+    return object mastContext:
+        to decodeNextTag(stream, => FAIL):
+            def readNodeList(guard):
+                def nextNode() :guard:
+                    return mastContext.exprAt(stream.nextInt())
+                return [for _ in (0..!(stream.nextInt())) nextNode()]
+            def nextExpr() :Expr:
+                return exprs[stream.nextInt(=> FAIL)]
+            def nextPattern() :Pattern:
+                return patts[stream.nextInt(=> FAIL)]
+            def span():
+                return stream.nextSpan(=> FAIL)
+            def tag := stream.nextByte(=> FAIL)
+            if (tag == 'L'.asInteger()):
+                def literalTag := stream.nextByte(=> FAIL)
+                if (literalTag == 'C'.asInteger()):
+                    var buf := b``
+                    while (true):
+                        buf with= (stream.nextByte(=> FAIL))
+                        def via (UTF8.decode) c exit __continue := buf
+                        exprs.push(builder.LiteralExpr(c, span()))
+                        break
+                else if (literalTag == 'D'.asInteger()):
+                    exprs.push(builder.LiteralExpr(stream.nextDouble(=> FAIL),
+                                                   span()))
+                else if (literalTag == 'I'.asInteger()):
+                    var i := stream.nextVarInt(=> FAIL) >> 1
+                    if ((i & 1) == 0):
+                        i ^= -1
+                    exprs.push(builder.LiteralExpr(i, span()))
+                else if (literalTag == 'N'.asInteger()):
+                    exprs.push(builder.LiteralExpr(null, span()))
+                else if (literalTag == 'S'.asInteger()):
+                    exprs.push(builder.LiteralExpr(stream.nextStr(=> FAIL),
+                                                   span()))
+                else:
+                    throw.eject(FAIL, `Didn't know literal tag $literalTag`)
+            else if (tag == 'P'.asInteger()):
+                def pattTag := stream.nextByte(=> FAIL)
+                if (pattTag == 'F'.asInteger()):
+                    def name := stream.nextStr(=> FAIL)
+                    def guard := nextExpr()
+                    patts.push(builder.FinalPattern(name, guard, span()))
+                else if (pattTag == 'I'.asInteger()):
+                    def guard := nextExpr()
+                    patts.push(builder.IgnorePattern(guard, span()))
+                else if (pattTag == 'V'.asInteger()):
+                    def name := stream.nextStr(=> FAIL)
+                    def guard := nextExpr()
+                    patts.push(builder.VarPattern(name, guard, span()))
+                else if (pattTag == 'L'.asInteger()):
+                    patts.push(readNodeList(Pattern), span())
+                else if (pattTag == 'A'.asInteger()):
+                    patts.push(builder.ViaPattern(nextExpr(), nextPattern(),
+                                                  span()))
+                else if (pattTag == 'B'.asInteger()):
+                    patts.push(builder.BindingPattern(stream.nextStr(=> FAIL),
+                                                      span()))
+            else if (tag == 'N'.asInteger()):
+                exprs.push(builder.NounExpr(stream.nextStr(=> FAIL), span()))
+            else if (tag == 'B'.asInteger()):
+                exprs.push(builder.BindingExpr(stream.nextStr(=> FAIL), span()))
+            else if (tag == 'S'.asInteger()):
+                exprs.push(builder.SeqExpr(readNodeList(Expr), span()))
+            else if (tag == 'C'.asInteger()):
+                exprs.push(builder.CallExpr(nextExpr(), stream.nextStr(=> FAIL),
+                                            readNodeList(Expr), span()))
+            else if (tag == 'D'.asInteger()):
+                exprs.push(builder.DefExpr(nextPattern(), nextExpr(), nextExpr(),
+                                           span()))
+            else if (tag == 'e'.asInteger()):
+                exprs.push(builder.EscapeExpr(nextPattern(), nextExpr(), null,
+                                              null, span()))
+            else if (tag == 'E'.asInteger()):
+                exprs.push(builder.EscapeExpr(nextPattern(), nextExpr(), nextPattern(),
+                                              nextExpr(), span()))
+            else if (tag == 'O'.asInteger()):
+                exprs.push(builder.ObjectExpr(stream.nextStr(=> FAIL),
+                                              nextPattern(),
+                                              [nextExpr()] + readNodeList(Expr),
+                                              readNodeList(Ast["Method"]),
+                                              readNodeList(Ast["Matcher"]),
+                                              span()))
+            else if (tag == 'M'.asInteger()):
+                exprs.push(builder."Method"(stream.nextStr(=> FAIL),
+                                          stream.nextStr(=> FAIL),
+                                          readNodeList(Pattern),
+                                          [for _ in (0..!(stream.nextInt()))
+                                           builder.NamedParam(nextExpr(), nextPattern(),
+                                                              nextExpr(), null)],
+                                          nextExpr(),
+                                          nextExpr(),
+                                          span()))
+            else if (tag == 'R'.asInteger()):
+                exprs.push(builder.Matcher(nextPattern(), nextExpr(), span()))
+            else if (tag == 'A'.asInteger()):
+                exprs.push(builder.AssignExpr(stream.nextStr(=> FAIL), nextExpr(), span()))
+            else if (tag == 'F'.asInteger()):
+                exprs.push(builder.FinallyExpr(nextExpr(), nextExpr(), span()))
+            else if (tag == 'Y'.asInteger()):
+                exprs.push(builder.TryExpr(nextExpr(), nextExpr(), span()))
+            else if (tag == 'I'.asInteger()):
+                exprs.push(builder.IfExpr(nextExpr(), nextExpr(), nextExpr(), span))
+            else if (tag == 'T'.asInteger()):
+                exprs.push(builder.MetaStateExpr(span()))
+            else if (tag == 'X'.asInteger()):
+                exprs.push(builder.MetaContextExpr(span()))
+
+def readMAST(bs :Bytes, => filename := "<unknown>",
+             => builder := astBuilder, => FAIL) as DeepFrozen:
+    if (!bs.startsWith(MAGIC)):
+        throw.eject(FAIL, `Wrong magic bytes '${bs.slice(0, MAGIC.size())}'`)
+    def version := bs[MAGIC.size()]
+    def content := bs.slice(MAGIC.size() + 1)
+    def withSpans := if (version == 0) {
+        false
+    } else if (version == 1) {
+        true
+    } else {
+        throw.eject(FAIL, `Unsupported MAST version $version`)
+    }
+    def stream := makeMASTStream(content, withSpans, filename)
+    def ctx := makeMASTReaderContext(builder)
+    while (!stream.exhausted()):
+        ctx.decodeNextTag(stream)
+    if (ctx.getExprs().size() == 0):
+        throw.eject(FAIL, "No expressions in MAST")
+    return ctx.getExprs().last()

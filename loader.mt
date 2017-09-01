@@ -83,8 +83,8 @@ def loaderMain():
                 def code := makeFileResource(fname).getContents()
                 return when (code) ->
                     try:
-                        def [modObj, _] := astEval.evalToPair(code, safeScope,
-                                                              "filename" => fname)
+                        def ast := loadMAST(code)
+                        def modObj := eval(ast, safeScope, "filename" => fname)
                         depMap[modname] := makeModuleConfiguration(modObj, [].asMap())
                     catch problem:
                         traceln(`Unable to eval file ${M.toQuote(fname)}`)
