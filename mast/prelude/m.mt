@@ -216,20 +216,23 @@ object eval as DeepFrozen:
      This object respects POLA and grants no privileges whatsoever to
      evaluated code. To grant a safe scope, pass `safeScope`."
 
-    to run(expr, environment, => evaluator := typhonAstEval, => inRepl := false):
+    to run(expr, environment, => evaluator := typhonAstEval,
+           => filename := "<eval>", => inRepl := false):
         "Evaluate a Monte expression, from source or from m``.
 
          The expression will be provided only the given environment. No other
          values will be passed in."
 
-        return eval.evalToPair(expr, environment, => evaluator, => inRepl)[0]
+        return eval.evalToPair(expr, environment, => filename, => evaluator,
+                               => inRepl)[0]
 
     to evalToPair(expr, environment, => ejPartial := throw,
-                  => evaluator := typhonAstEval, => inRepl := false):
+                  => filename := "<eval>", => evaluator := typhonAstEval,
+                  => inRepl := false):
         def fullAst :Expr := if (expr =~ source :Str) {
-            parseExpression(makeMonteLexer(source, "<eval>"), astBuilder,
+            parseExpression(makeMonteLexer(source, filename), astBuilder,
                             throw, ejPartial)
         } else {expr}
         def ast := optimize(expand(fullAst, astBuilder, throw))
         def nast := normalize(ast, typhonAstBuilder)
-        return evaluator.evalToPair(nast, environment, => inRepl)
+        return evaluator.evalToPair(nast, environment, filename, => inRepl)

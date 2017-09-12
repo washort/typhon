@@ -709,7 +709,7 @@ def scopeNames := [
     => _validateFor,
     => _switchFailed, => _makeVerbFacet, => _comparer, => _suchThat,
     => _matchSame, => _bind, => _quasiMatcher, => _splitList,
-    => M, => Ref,  => throw, => astEval, => typhonAstEval, => typhonASTBuilder, => loadMAST, => promiseAllFulfilled,
+    => M, => Ref,  => throw, => astEval, => typhonAstEval, => typhonAstBuilder, => loadMAST, => promiseAllFulfilled,
     => makeLazySlot]
 
 def scopeAsDF(scope):
@@ -771,6 +771,7 @@ for module in ([
     "lib/monte/monte_parser",
     "lib/monte/monte_expander",
     "lib/monte/monte_optimizer",
+    "lib/monte/normalizer",
     "lib/codec/utf8",
     "lib/monte/mast",
 ]):

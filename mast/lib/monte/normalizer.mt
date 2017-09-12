@@ -58,6 +58,6 @@ def normalize(ast, builder) as DeepFrozen:
                 def [doc, verb, patts, namedPatts, guard, body] := args
                 builder.MethodExpr(doc, verb, patts, namedPatts, guard, body, span)
             match nodeName:
-                M.call(builder, nodeName, args + [span])
+                M.call(builder, nodeName, args + [span], [].asMap())
 
     return ast.transform(normalizeTransformer)
