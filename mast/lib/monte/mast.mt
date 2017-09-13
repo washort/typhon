@@ -39,7 +39,7 @@ def makeMASTContext() as DeepFrozen:
 
     var exprIndex :Int := 0
     var pattIndex :Int := 0
-    def streams := [MAGIC].diverge()
+    def streams := [MAGIC + b`$\x01`].diverge()
 
     return object MASTContext:
         "A MAST context."
