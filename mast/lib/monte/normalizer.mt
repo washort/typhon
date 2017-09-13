@@ -6,6 +6,8 @@ def normalize(ast, builder) as DeepFrozen:
         return switch (node.getNodeName()):
             match =="LiteralExpr":
                 switch (args[0]):
+                    match ==null:
+                        builder.NullExpr(span)
                     match i :Int:
                         builder.IntExpr(i, span)
                     match s :Str:
@@ -14,6 +16,14 @@ def normalize(ast, builder) as DeepFrozen:
                         builder.CharExpr(c, span)
                     match d :Double:
                         builder.DoubleExpr(d, span)
+            match =="AssignExpr":
+                def [_name, rvalue] := args
+                builder.AssignExpr(node.getLvalue().getName(), rvalue, span)
+            match =="BindingExpr":
+                builder.BindingExpr(node.getNoun().getName(), span)
+            match =="CatchExpr":
+                def [body, patt, catchbody] := args
+                builder.TryExpr(body, patt, catchbody, span)
             match =="MethodCallExpr":
                 def [obj, verb, margs, namedArgs] := args
                 builder.CallExpr(obj, verb, margs, namedArgs, span)

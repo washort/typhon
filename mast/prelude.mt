@@ -771,12 +771,11 @@ for module in ([
     "lib/monte/monte_parser",
     "lib/monte/monte_expander",
     "lib/monte/monte_optimizer",
-    "lib/monte/normalizer",
     "lib/codec/utf8",
-    "lib/monte/mast",
 ]):
     dependencies[module] := loadit(module)
-
+importIntoScope("lib/monte/normalizer")
+importIntoScope("lib/monte/mast")
 # The big kahuna: The Monte compiler and QL.
 # Note: This isn't portable. The usage of typhonEval() ties us to Typhon. This
 # doesn't *have* to be the case, but it's the case we currently want to deal

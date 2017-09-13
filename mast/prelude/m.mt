@@ -5,7 +5,7 @@ import "lib/monte/monte_parser" =~ [
 ]
 import "lib/monte/monte_expander" =~ [=> expand :DeepFrozen]
 import "lib/monte/monte_optimizer" =~ [=> optimize :DeepFrozen]
-import "lib/monte/normalizer" =~ [=> normalize :DeepFrozen]
+#import "lib/monte/normalizer" =~ [=> normalize :DeepFrozen]
 import "boot" =~ [=> TransparentStamp :DeepFrozen]
 exports (::"m``", ::"mpatt``", eval)
 

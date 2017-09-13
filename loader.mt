@@ -83,8 +83,9 @@ def loaderMain():
                 def code := makeFileResource(fname).getContents()
                 return when (code) ->
                     try:
-                        def ast := loadMAST(code)
-                        def modObj := eval(ast, safeScope, "filename" => fname)
+                        def ast := readMAST(code)
+                        
+                        def modObj := typhonAstEval(normalize(ast, typhonAstBuilder), safeScope, fname)
                         depMap[modname] := makeModuleConfiguration(modObj, [].asMap())
                     catch problem:
                         traceln(`Unable to eval file ${M.toQuote(fname)}`)
