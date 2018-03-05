@@ -23,6 +23,8 @@ from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from typhon.log import log
 
 from typhon.objects.root import Object
+from typhon.rpromise import Fn, Promise
+
 
 class UVError(Exception):
     """
@@ -240,11 +242,13 @@ def stashFor(name, struct, initial=None):
 
     return stash, unstash, unstashing
 
+# createStasher("timer")
 stashTimer, unstashTimer, unstashingTimer = stashFor(
     "timer", timer_tp, initial=(None, 0))
 stashStream, unstashStream, unstashingStream = stashFor("stream", stream_tp)
 stashWrite, unstashWrite, unstashingWrite = stashFor("write", write_tp)
 stashFS, unstashFS, unstashingFS = stashFor("fs", fs_tp)
+stashFS2, unstashFS2, unstashingFS2 = stashFor("fs", fs_tp)
 stashGAI, unstashGAI, unstashingGAI = stashFor("gai", gai_tp)
 stashProcess, unstashProcess, unstashingProcess = stashFor("process",
                                                            process_tp)
@@ -754,6 +758,41 @@ fs_read = rffi.llexternal("uv_fs_read", [loop_tp, fs_tp, rffi.INT,
                                          rffi.LONGLONG, fs_cb],
                           rffi.INT, compilation_info=eci)
 fsRead = checking("fs_read", fs_read)
+
+
+def magic_fsRead(vat, fd):
+    fs = alloc_fs()
+    return Promise(MagicFSReadCB(vat, fs, fd))
+
+
+def magic_fsRead_cb(fs):
+    (cb, resolver) = unstashFS2(fs)
+    size = intmask(fs.c_result)
+    fsDiscard(fs)
+    if size > 0:
+        resolver.fulfill(rffi.charpsize2str(cb.buf.c_base, size))
+    elif size < 0:
+        resolver.reject(u"libuv error: " + formatError(size).decode("utf-8"))
+    else:
+        resolver.fulfill("")
+
+
+class MagicFSReadCB(Fn):
+    def __init__(self, vat, fs, fd):
+        self.vat = vat
+        self.fs = fs
+        self.fd = fd
+        self.buf = allocBuf(16384)
+
+    def run(self, resolver):
+        with lltype.scoped_alloc(rffi.CArray(buf_t), 1) as bufs:
+            bufs[0].c_base = self.buf.c_base
+            bufs[0].c_len = self.buf.c_len
+            stashFS2(self.fs, (self, resolver))
+            fsRead(self.vat.uv_loop, self.fs, self.fd, bufs, 1, -1,
+                   magic_fsRead_cb)
+
+
 fs_write = rffi.llexternal("uv_fs_write", [loop_tp, fs_tp, rffi.INT,
                                            array_buf_t, rffi.UINT,
                                            rffi.LONGLONG, fs_cb],

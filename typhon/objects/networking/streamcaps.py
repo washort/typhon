@@ -48,6 +48,8 @@ from rpython.rlib.rarithmetic import intmask
 from rpython.rtyper.lltypesystem.lltype import scoped_alloc
 from rpython.rtyper.lltypesystem.rffi import charpsize2str, INTP
 
+# from typhon.macros import macros, when, catch
+
 from typhon import ruv
 from typhon.atoms import getAtom
 from typhon.autohelp import autohelp, method
@@ -57,6 +59,7 @@ from typhon.objects.data import BytesObject, StrObject
 from typhon.objects.refs import makePromise
 from typhon.objects.signals import SignalHandle
 from typhon.objects.root import Object
+from typhon.rpromise import Handler
 from typhon.vats import scopedVat
 
 ABORT_1 = getAtom(u"abort", 1)
@@ -253,23 +256,6 @@ class StreamSink(Object):
         return False
 
 
-def readFileCB(fs):
-    size = intmask(fs.c_result)
-    vat, source = ruv.unstashFS(fs)
-    assert isinstance(source, FileSource)
-    with scopedVat(vat):
-        if size > 0:
-            data = charpsize2str(source._buf.c_base, size)
-            source.deliver(data)
-        elif size < 0:
-            msg = ruv.formatError(size).decode("utf-8")
-            source.abort(u"libuv error: %s" % msg)
-        else:
-            # EOF.
-            source.complete()
-    ruv.fsDiscard(fs)
-
-
 @autohelp
 class TTYSink(StreamSink):
     """
@@ -345,18 +331,30 @@ class FileSource(Object):
     def run(self, sink):
         p, r = makePromise()
         self._queue.append((r, sink))
-        with scoped_alloc(ruv.rffi.CArray(ruv.buf_t), 1) as bufs:
-            bufs[0].c_base = self._buf.c_base
-            bufs[0].c_len = self._buf.c_len
-            fs = ruv.alloc_fs()
-            ruv.stashFS(fs, (self._vat, self))
-            ruv.fsRead(self._vat.uv_loop, fs, self._fd, bufs, 1, -1,
-                       readFileCB)
+
+        ruv.magic_fsRead(self._vat, self._fd).then(StreamReadHandler(self))
+
         return p
 
     @method("Bool")
     def isATTY(self):
         return False
+
+
+class StreamReadHandler(Handler):
+    def __init__(self, stream):
+        Handler.__init__(self)
+        self.stream = stream
+
+    def onFulfilled(self, result):
+        value = result.value
+        if value != "":
+            self.stream.deliver(value)
+        else:
+            self.stream.complete()
+
+    def onRejected(self, result):
+        self.stream.abort(result.err)
 
 
 def writeFileCB(fs):

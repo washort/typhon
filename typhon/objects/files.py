@@ -19,6 +19,8 @@ from rpython.rlib.rarithmetic import intmask
 from rpython.rtyper.lltypesystem.lltype import scoped_alloc
 from rpython.rtyper.lltypesystem.rffi import charpsize2str
 
+# from typhon.macros import macros, when, catch
+
 from typhon import log, rsodium, ruv
 from typhon.atoms import getAtom
 from typhon.autohelp import autohelp, method
@@ -27,6 +29,7 @@ from typhon.objects.constants import NullObject
 from typhon.objects.data import BytesObject, StrObject, unwrapStr
 from typhon.objects.refs import LocalResolver, makePromise
 from typhon.objects.root import Object, runnable
+from typhon.rpromise import Handler
 from typhon.vats import currentVat, scopedVat
 
 
@@ -101,13 +104,24 @@ class GetContents(Object):
         self.resolver.smash(StrObject(u"libuv error: %s" % reason))
 
     def queueRead(self):
-        fs = ruv.alloc_fs()
-        ruv.stashFS(fs, (self.vat, self))
-        with scoped_alloc(ruv.rffi.CArray(ruv.buf_t), 1) as bufs:
-            bufs[0].c_base = self.buf.c_base
-            bufs[0].c_len = self.buf.c_len
-            ruv.fsRead(self.vat.uv_loop, fs, self.fd, bufs, 1, -1,
-                       getContentsCB)
+        return ruv.magic_fsRead(self.vat, self.fd).then(FsReadHandler(self))
+
+
+class FsReadHandler(Handler):
+    def __init__(self, reader):
+        Handler.__init__(self)
+        self.reader = reader
+
+    def onFulfilled(self, result):
+        data = result.value
+        if data != "":
+            self.reader.append(data)
+        else:
+            self.reader.succeed()
+
+    def onRejected(self, result):
+        self.reader.fail(result.err)
+
 
 def openGetContentsCB(fs):
     try:
@@ -127,26 +141,6 @@ def openGetContentsCB(fs):
         ruv.fsDiscard(fs)
     except:
         print "Exception in openGetContentsCB"
-
-def getContentsCB(fs):
-    try:
-        size = intmask(fs.c_result)
-        # Don't use with-statements here; instead, each next action in
-        # GetContents will re-stash if necessary. ~ C.
-        vat, self = ruv.unstashFS(fs)
-        assert isinstance(self, GetContents)
-        if size > 0:
-            data = charpsize2str(self.buf.c_base, size)
-            self.append(data)
-        elif size < 0:
-            msg = ruv.formatError(size).decode("utf-8")
-            self.fail(msg)
-        else:
-            # End of file! Complete the callback.
-            self.succeed()
-        ruv.fsDiscard(fs)
-    except Exception:
-        print "Exception in getContentsCB"
 
 
 def renameCB(fs):
