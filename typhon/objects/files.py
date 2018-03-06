@@ -29,7 +29,7 @@ from typhon.objects.constants import NullObject
 from typhon.objects.data import BytesObject, StrObject, unwrapStr
 from typhon.objects.refs import LocalResolver, makePromise
 from typhon.objects.root import Object, runnable
-from typhon.rpromise import Handler
+from typhon.rpromise import Handler, Result
 from typhon.vats import currentVat, scopedVat
 
 
@@ -82,7 +82,7 @@ class GetContents(Object):
         self.pieces.append(data)
         self.pos += len(data)
         # Queue another!
-        self.queueRead()
+        return self.queueRead()
 
     def succeed(self):
         # Clean up libuv stuff.
@@ -92,7 +92,9 @@ class GetContents(Object):
 
         # Finally, resolve.
         buf = "".join(self.pieces)
-        self.resolver.resolve(BytesObject(buf))
+        bo = BytesObject(buf)
+        self.resolver.resolve(bo)
+        return (bo, None, None)
 
     def fail(self, reason):
         # Clean up libuv stuff.
@@ -102,9 +104,11 @@ class GetContents(Object):
 
         # And resolve.
         self.resolver.smash(StrObject(u"libuv error: %s" % reason))
+        return (None, None, None)
 
     def queueRead(self):
-        return ruv.magic_fsRead(self.vat, self.fd).then(FsReadHandler(self))
+        p = ruv.magic_fsRead(self.vat, self.fd).then(FsReadHandler(self))
+        return (None, None, p)
 
 
 class FsReadHandler(Handler):
@@ -113,14 +117,14 @@ class FsReadHandler(Handler):
         self.reader = reader
 
     def onFulfilled(self, result):
-        data = result.value
+        data = result[0]
         if data != "":
-            self.reader.append(data)
+            return self.reader.append(data)
         else:
-            self.reader.succeed()
+            return self.reader.succeed()
 
     def onRejected(self, result):
-        self.reader.fail(result.err)
+        return self.reader.fail(result[1])
 
 
 def openGetContentsCB(fs):

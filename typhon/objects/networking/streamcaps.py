@@ -347,14 +347,16 @@ class StreamReadHandler(Handler):
         self.stream = stream
 
     def onFulfilled(self, result):
-        value = result.value
+        value = result[0]
         if value != "":
             self.stream.deliver(value)
         else:
             self.stream.complete()
+        return (None, None, None)
 
     def onRejected(self, result):
-        self.stream.abort(result.err)
+        self.stream.abort(result[1])
+        return (None, None, None)
 
 
 def writeFileCB(fs):

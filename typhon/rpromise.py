@@ -1,10 +1,12 @@
+from rpython.rlib.objectmodel import specialize
 PENDING, FULFILLED, REJECTED, CHAINED = range(4)
 
 
 class Result(object):
-    def __init__(self, value, err):
+    def __init__(self, value, err, promise):
         self.value = value
         self.err = err
+        self.promise = promise
 
 
 class Resolver(object):
@@ -17,38 +19,46 @@ class Resolver(object):
         if self.done:
             return
         self.done = True
-        self.target._resolve(value)
+        self.target._resolve((value, None, None))
 
     def reject(self, error):
         # aka 'smash'
         if self.done:
             return
         self.done = True
-        self.target._reject(error)
+        self.target._reject((None, error, None))
+
+    def chain(self, p):
+        if self.done:
+            return
+        self.done = True
+        self.target._resolve((None, None, p))
 
 
 class Promise(object):
     def __init__(self, fn):
         self.state = 0
-        self.result = None
+        self.result = (None, None, None)
         self.chain = None
         self.handlers = []
         fn.run(Resolver(self))
 
+    @specialize.call_location()
     def _resolve(self, result):
-        if isinstance(result, Promise):
-            if result is self:
-                return self._reject(u"A promise cannot be resolved with itself.")
+        if result[2]:
+            if result[2] is self:
+                return self._reject((None,
+                           u"A promise cannot be resolved with itself.",
+                           None))
             self.state = CHAINED
-            self.chain = result
         else:
             self.state = FULFILLED
-            self.result = Result(result, None)
+        self.result = result
         self.finale()
 
     def _reject(self, error):
         self.state = REJECTED
-        self.result = Result(None, error)
+        self.result = error
         self.finale()
 
     def finale(self):
@@ -70,7 +80,7 @@ class Promise(object):
                     handler.promise._resolve(
                         handler.onRejected(self.result))
             except Exception as e:
-                handler.promise._reject(str(e).decode('utf-8'))
+                handler.promise._reject((None, str(e).decode('utf-8'), None))
 
     def then(self, handler):
         if handler.promise is not None:
@@ -85,10 +95,10 @@ class Handler(object):
         self.promise = None
 
     def onFulfilled(self, result):
-        return None
+        return (None, None, None)
 
     def onRejected(self, result):
-        return None
+        return (None, None, None)
 
 
 class Fn(object):
