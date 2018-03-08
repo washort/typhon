@@ -29,7 +29,7 @@ from typhon.objects.constants import NullObject
 from typhon.objects.data import BytesObject, StrObject, unwrapStr
 from typhon.objects.refs import LocalResolver, makePromise
 from typhon.objects.root import Object, runnable
-from typhon.rpromise import Handler, Result
+from typhon.rpromise import Handler
 from typhon.vats import currentVat, scopedVat
 
 
@@ -70,13 +70,13 @@ class GetContents(Object):
 
     def __init__(self, vat, fd, resolver):
         self.vat = vat
-        self.fd = fd
         self.resolver = resolver
 
         self.pieces = []
 
         # XXX read size should be tunable
         self.buf = ruv.allocBuf(16384)
+        self.fd = fd
 
     def append(self, data):
         self.pieces.append(data)
@@ -182,10 +182,12 @@ class SetContents(Object):
         ruv.stashFS(fs, (self.vat, sb))
         ruv.fsWrite(self.vat.uv_loop, fs, self.fd, bufs,
                     1, -1, writeSetContentsCB)
+        return (None, None, None)
 
     def startWriting(self, fd):
+        assert isinstance(fd, int)
         self.fd = fd
-        self.queueWrite()
+        return self.queueWrite()
 
     def written(self, size):
         self.pos += size
@@ -203,21 +205,6 @@ class SetContents(Object):
         # And issuing the rename is surprisingly straightforward.
         p = self.src.rename(self.dest.asBytes())
         self.resolver.resolve(p)
-
-
-def openSetContentsCB(fs):
-    try:
-        fd = intmask(fs.c_result)
-        vat, sc = ruv.unstashFS(fs)
-        assert isinstance(sc, SetContents)
-        if fd < 0:
-            msg = ruv.formatError(fd).decode("utf-8")
-            sc.fail(u"Couldn't open file fount: %s" % msg)
-        else:
-            sc.startWriting(fd)
-        ruv.fsDiscard(fs)
-    except:
-        print "Exception in openSetContentsCB"
 
 
 def writeSetContentsCB(fs):
@@ -255,6 +242,51 @@ def closeSetContentsCB(fs):
         print "Exception in closeSetContentsCB"
 
 
+class OpenGetContents(Handler):
+    """Documentation for OpenGetContents
+
+    """
+    def __init__(self, vat, monteResolver):
+        Handler.__init__(self)
+        self.vat = vat
+        self.monteResolver = monteResolver
+
+    def onFulfilled(self, result):
+        if result[0] is None:
+            return result
+        fd = result[0]
+        assert isinstance(fd, int)
+        gc = GetContents(self.vat, fd, self.monteResolver)
+        return gc.queueRead()
+
+    def onRejected(self, err):
+        return err
+
+
+class OpenSetContents(Handler):
+    """Documentation for OpenSetContents
+
+    """
+    def __init__(self, vat, data, r, sibling, fileObj):
+        Handler.__init__(self)
+        self.vat = vat
+        self.data = data
+        self.r = r
+        self.sibling = sibling
+        self.fileObj = fileObj
+
+    def onFulfilled(self, result):
+        if result[0] is None:
+            return result
+        return SetContents(self.vat, self.data, self.r, self.sibling,
+                           self.fileObj).startWriting(result[0])
+
+    def onRejected(self, err):
+        if err[1] is None:
+            return err
+        return (None, u"Couldn't open file fount: " + err[1], None)
+
+
 @autohelp
 class FileResource(Object):
     """
@@ -278,21 +310,14 @@ class FileResource(Object):
         return "/".join(self.segments)
 
     @specialize.call_location()
-    def open(self, callback, flags=None, mode=None):
-        # Always call this as .open(callback, flags=..., mode=...)
+    def open(self, flags=None, mode=None):
         assert flags is not None
         assert mode is not None
 
-        p, r = makePromise()
         vat = currentVat.get()
-        uv_loop = vat.uv_loop
-        fs = ruv.alloc_fs()
-
         path = self.asBytes()
         log.log(["fs"], u"makeFileResource: Opening file '%s'" % path.decode("utf-8"))
-        ruv.stashFS(fs, (vat, r))
-        ruv.fsOpen(uv_loop, fs, path, flags, mode, callback)
-        return p
+        return ruv.magic_fsOpen(vat, path, flags, mode)
 
     def rename(self, dest):
         p, r = makePromise()
@@ -314,7 +339,11 @@ class FileResource(Object):
 
     @method("Any")
     def getContents(self):
-        return self.open(openGetContentsCB, flags=os.O_RDONLY, mode=0000)
+        p, r = makePromise()
+        vat = currentVat.get()
+        self.open(flags=os.O_RDONLY, mode=0000).then(
+            OpenGetContents(vat, r))
+        return p
 
     @method("Any", "Bytes")
     def setContents(self, data):
@@ -322,16 +351,12 @@ class FileResource(Object):
 
         p, r = makePromise()
         vat = currentVat.get()
-        uv_loop = vat.uv_loop
-        fs = ruv.alloc_fs()
-
         path = sibling.asBytes()
         # Use CREAT | EXCL to cause a failure if the temporary file
         # already exists.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        sc = SetContents(vat, data, r, sibling, self)
-        ruv.stashFS(fs, (vat, sc))
-        ruv.fsOpen(uv_loop, fs, path, flags, 0777, openSetContentsCB)
+        ruv.magic_fsOpen(vat, path, flags, 0777).then(
+            OpenSetContents(vat, data, r, sibling, self))
         return p
 
     @method("Any", "Any", _verb="rename")

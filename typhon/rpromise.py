@@ -101,6 +101,19 @@ class Handler(object):
         return (None, None, None)
 
 
+class MonteResolverHandler(Handler):
+    def __init__(self, monteResolver):
+        Handler.__init__(self)
+        self.monteResolver = monteResolver
+
+    def onFulfilled(self, result):
+        self.monteResolver.resolve(result.value)
+
+    def onRejected(self, result):
+        from typhon.objects.data import StrObject
+        self.monteResolver.smash(StrObject(result.err))
+
+
 class Fn(object):
     def run(self, resolver):
         pass

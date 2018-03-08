@@ -295,6 +295,7 @@ class FileSource(Object):
 
         # XXX read size should be tunable
         self._buf = ruv.allocBuf(16384)
+        assert isinstance(self._fd, int)
 
     def _nextSink(self):
         assert self._queue, "pepperocini"

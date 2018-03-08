@@ -24,6 +24,7 @@ from typhon.log import log
 
 from typhon.objects.root import Object
 from typhon.rpromise import Fn, Promise
+from typhon.vats import scopedVat
 
 
 class UVError(Exception):
@@ -760,7 +761,38 @@ fs_read = rffi.llexternal("uv_fs_read", [loop_tp, fs_tp, rffi.INT,
 fsRead = checking("fs_read", fs_read)
 
 
-def magic_fsRead(vat, fd):
+def magic_fsOpen(vat, path, flags, mode):
+    fs = alloc_fs()
+    return Promise(MagicFSOpenCB(vat, fs, path, flags, mode))
+
+
+def magic_fsOpen_cb(fs):
+    self, resolver = unstashFS2(fs)
+    fd = intmask(fs.c_result)
+    fsDiscard(fs)
+    with scopedVat(self.vat):
+        if fd < 0:
+            msg = formatError(fd).decode("utf-8")
+            resolver.reject(msg)
+        else:
+            resolver.fulfill(fd)
+
+
+class MagicFSOpenCB(Fn):
+    def __init__(self, vat, fs, path, flags, mode):
+        self.vat = vat
+        self.fs = fs
+        self.path = path
+        self.flags = flags
+        self.mode = mode
+
+    def run(self, resolver):
+        stashFS2(self.fs, (self, resolver))
+        fsOpen(self.vat.uv_loop, self.fs, self.flags, self.mode,
+               magic_fsOpen_cb)
+
+
+def magic_fsRead(vat, fd=0):
     fs = alloc_fs()
     return Promise(MagicFSReadCB(vat, fs, fd))
 
