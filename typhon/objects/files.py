@@ -94,7 +94,7 @@ class GetContents(Object):
         buf = "".join(self.pieces)
         bo = BytesObject(buf)
         self.resolver.resolve(bo)
-        return (bo, None, None)
+        return (None, None, None)
 
     def fail(self, reason):
         # Clean up libuv stuff.
