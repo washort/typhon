@@ -127,40 +127,6 @@ class FsReadHandler(Handler):
         return self.reader.fail(result[1])
 
 
-def openGetContentsCB(fs):
-    try:
-        fd = intmask(fs.c_result)
-        vat, r = ruv.unstashFS(fs)
-        assert isinstance(r, LocalResolver)
-        with scopedVat(vat):
-            if fd < 0:
-                msg = ruv.formatError(fd).decode("utf-8")
-                r.smash(StrObject(u"Couldn't open file fount: %s" % msg))
-            else:
-                # Strategy: Read and use the callback to queue additional reads
-                # until done. This call is known to its caller to be expensive, so
-                # there's not much point in trying to be clever about things yet.
-                gc = GetContents(vat, fd, r)
-                gc.queueRead()
-        ruv.fsDiscard(fs)
-    except:
-        print "Exception in openGetContentsCB"
-
-
-def renameCB(fs):
-    try:
-        success = intmask(fs.c_result)
-        vat, r = ruv.unstashFS(fs)
-        if success < 0:
-            msg = ruv.formatError(success).decode("utf-8")
-            r.smash(StrObject(u"Couldn't rename file: %s" % msg))
-        else:
-            r.resolve(NullObject)
-        ruv.fsDiscard(fs)
-    except:
-        print "Exception in renameCB"
-
-
 class SetContents(Object):
 
     pos = 0
@@ -176,13 +142,8 @@ class SetContents(Object):
         self.resolver.smash(StrObject(reason))
 
     def queueWrite(self):
-        fs = ruv.alloc_fs()
-        sb = ruv.scopedBufs([self.data], self)
-        bufs = sb.allocate()
-        ruv.stashFS(fs, (self.vat, sb))
-        ruv.fsWrite(self.vat.uv_loop, fs, self.fd, bufs,
-                    1, -1, writeSetContentsCB)
-        return (None, None, None)
+        return ruv.magic_fsWrite(self.vat, self.fd, self.data).then(
+            SetContentsHandler(self))
 
     def startWriting(self, fd):
         assert isinstance(fd, int)
@@ -193,13 +154,10 @@ class SetContents(Object):
         self.pos += size
         self.data = self.data[size:]
         if self.data:
-            self.queueWrite()
+            return self.queueWrite()
         else:
-            # Finished writing; let's move on to the rename.
-            fs = ruv.alloc_fs()
-            ruv.stashFS(fs, (self.vat, self))
-            ruv.fsClose(self.vat.uv_loop, fs, self.fd,
-                        closeSetContentsCB)
+            return ruv.magic_fsClose(self.vat, self.fd).then(
+                CloseSetContentsHandler(self))
 
     def rename(self):
         # And issuing the rename is surprisingly straightforward.
@@ -207,39 +165,34 @@ class SetContents(Object):
         self.resolver.resolve(p)
 
 
-def writeSetContentsCB(fs):
-    try:
-        vat, sb = ruv.unstashFS(fs)
-        sc = sb.obj
-        assert isinstance(sc, SetContents)
-        size = intmask(fs.c_result)
-        if size >= 0:
-            sc.written(size)
-        else:
-            msg = ruv.formatError(size).decode("utf-8")
-            sc.fail(u"libuv error: %s" % msg)
-        ruv.fsDiscard(fs)
-        sb.deallocate()
-    except:
-        print "Exception in writeSetContentsCB"
+class SetContentsHandler(Handler):
+    def __init__(self, sc):
+        self.sc = sc
+
+    def onFulfilled(self, result):
+        # if result[0] is None:
+        #    return result
+        return self.sc.written(result[0])
+
+    def onRejected(self, err):
+        if err[1] is None:
+            return err
+        self.sc.fail(u"libuv error: " + err[1])
 
 
-def closeSetContentsCB(fs):
-    try:
-        vat, sc = ruv.unstashFS(fs)
-        # Need to scope vat here.
-        with scopedVat(vat):
-            assert isinstance(sc, SetContents)
-            size = intmask(fs.c_result)
-            if size < 0:
-                msg = ruv.formatError(size).decode("utf-8")
-                sc.fail(u"libuv error: %s" % msg)
-            else:
-                # Success.
-                sc.rename()
-        ruv.fsDiscard(fs)
-    except:
-        print "Exception in closeSetContentsCB"
+class CloseSetContentsHandler(Handler):
+    def __init__(self, sc):
+        self.sc = sc
+
+    def onFulfilled(self, result):
+        # if result[0] is None:
+        #     return result
+        return self.sc.rename()
+
+    def onRejected(self, err):
+        # if err[1] is None:
+        #     return err
+        self.sc.fail(u"libuv error: " + err[1])
 
 
 class OpenGetContents(Handler):
@@ -252,8 +205,8 @@ class OpenGetContents(Handler):
         self.monteResolver = monteResolver
 
     def onFulfilled(self, result):
-        if result[0] is None:
-            return result
+        # if result[0] is None:
+        #     return result
         fd = result[0]
         assert isinstance(fd, int)
         gc = GetContents(self.vat, fd, self.monteResolver)
@@ -264,9 +217,6 @@ class OpenGetContents(Handler):
 
 
 class OpenSetContents(Handler):
-    """Documentation for OpenSetContents
-
-    """
     def __init__(self, vat, data, r, sibling, fileObj):
         Handler.__init__(self)
         self.vat = vat
@@ -276,15 +226,27 @@ class OpenSetContents(Handler):
         self.fileObj = fileObj
 
     def onFulfilled(self, result):
-        if result[0] is None:
-            return result
+        # if result[0] is None:
+        #     return result
         return SetContents(self.vat, self.data, self.r, self.sibling,
                            self.fileObj).startWriting(result[0])
 
     def onRejected(self, err):
-        if err[1] is None:
-            return err
+        # if err[1] is None:
+        #     return err
         return (None, u"Couldn't open file fount: " + err[1], None)
+
+
+class RenameHandler(Handler):
+    def __init__(self, monteResolver):
+        Handler.__init__(self)
+        self.monteResolver = monteResolver
+    def onFulfilled(self, result):
+        self.monteResolver.resolve(NullObject)
+        return (None, None, None)
+    def onRejected(self, err):
+        self.monteResolver.smash(StrObject(u"Couldn't rename file: %s" % err[1]))
+        return (None, None, None)
 
 
 @autohelp
@@ -326,8 +288,7 @@ class FileResource(Object):
         fs = ruv.alloc_fs()
 
         src = self.asBytes()
-        ruv.stashFS(fs, (vat, r))
-        ruv.fsRename(uv_loop, fs, src, dest, renameCB)
+        ruv.magic_fsRename(vat, src, dest).then(RenameHandler(r))
         return p
 
     def sibling(self, segment):

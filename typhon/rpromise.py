@@ -14,6 +14,7 @@ class Resolver(object):
         self.target = target
         self.done = False
 
+    #@specialize.call_location()
     def fulfill(self, value):
         # aka 'resolve'
         if self.done:

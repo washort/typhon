@@ -250,6 +250,7 @@ stashStream, unstashStream, unstashingStream = stashFor("stream", stream_tp)
 stashWrite, unstashWrite, unstashingWrite = stashFor("write", write_tp)
 stashFS, unstashFS, unstashingFS = stashFor("fs", fs_tp)
 stashFS2, unstashFS2, unstashingFS2 = stashFor("fs", fs_tp)
+stashFS3, unstashFS3, unstashingFS3 = stashFor("fs", fs_tp)
 stashGAI, unstashGAI, unstashingGAI = stashFor("gai", gai_tp)
 stashProcess, unstashProcess, unstashingProcess = stashFor("process",
                                                            process_tp)
@@ -620,6 +621,30 @@ def alloc_shutdown():
     return lltype.malloc(cConfig["shutdown_t"], flavor="raw", zero=True)
 
 
+def magic_write(stream, data):
+    return Promise(MagicWriteCB(stream, data))
+
+
+def magic_writeStreamCB(uv_write, status):
+    self, sb = unstashWrite(uv_write)
+    r = sb.obj
+    sb.deallocate()
+    r.fulfill(None)
+
+
+class MagicWriteCB(Fn):
+    def __init__(self, stream, data):
+        self.data = data
+        self.stream = stream
+
+    def run(self, r):
+        uv_write = alloc_write()
+        sb = scopedBufs([self.data], r)
+        bufs = sb.allocate()
+        stashWrite(uv_write, (self, sb))
+        write(uv_write, self.stream, bufs, 1, magic_writeStreamCB)
+
+
 tcp_init = rffi.llexternal("uv_tcp_init", [loop_tp, tcp_tp], rffi.INT,
                            compilation_info=eci)
 # Give up type safety on the sockaddrs. They already intentionally gave up on
@@ -798,11 +823,11 @@ def magic_fsRead(vat, fd=0):
 
 
 def magic_fsRead_cb(fs):
-    (cb, resolver) = unstashFS2(fs)
+    self, resolver = unstashFS2(fs)
     size = intmask(fs.c_result)
     fsDiscard(fs)
     if size > 0:
-        resolver.fulfill(rffi.charpsize2str(cb.buf.c_base, size))
+        resolver.fulfill(rffi.charpsize2str(self.buf.c_base, size))
     elif size < 0:
         resolver.reject(u"libuv error: " + formatError(size).decode("utf-8"))
     else:
@@ -830,10 +855,105 @@ fs_write = rffi.llexternal("uv_fs_write", [loop_tp, fs_tp, rffi.INT,
                                            rffi.LONGLONG, fs_cb],
                            rffi.INT, compilation_info=eci)
 fsWrite = checking("fs_write", fs_write)
+
+
+def magic_fsWrite(vat, fd, data):
+    fs = alloc_fs()
+    return Promise(MagicFSWriteCB(vat, fs, fd, data))
+
+
+def magic_fsWrite_cb(fs):
+    self, sb = unstashFS3(fs)
+    r = sb.obj
+    size = intmask(fs.c_result)
+    fsDiscard(fs)
+    sb.deallocate()
+    if size >= 0:
+        r.fulfill(size)
+    else:
+        r.reject(formatError(size).decode("utf-8"))
+
+
+class MagicFSWriteCB(Fn):
+    """Documentation for MagicFSWriteCB
+
+    """
+    def __init__(self, vat, fs, fd, data):
+        self.vat = vat
+        self.fs = fs
+        self.fd = fd
+        self.data = data
+
+    def run(self, r):
+        sb = scopedBufs([self.data], r)
+        stashFS3(self.fs, (self, sb))
+        bufs = sb.allocate()
+        fsWrite(self.vat.uv_loop, self.fs, self.fd, bufs, 1, -1,
+                magic_fsWrite_cb)
+
+
+def magic_fsClose(vat, fd):
+    return Promise(MagicFSCloseCB(vat, fd))
+
+
+def magic_fsClose_cb(fs):
+    self, r = unstashFS2(fs)
+    size = intmask(fs.c_result)
+    fsDiscard(fs)
+    if size >= 0:
+        r.fulfill(None)
+    else:
+        r.reject(formatError(size).decode("utf-8"))
+
+
+class MagicFSCloseCB(Fn):
+    def __init__(self, vat, fd):
+        self.vat = vat
+        self.fd = fd
+
+    def run(self, r):
+        fs = alloc_fs()
+        stashFS2(fs, (self, r))
+        fsClose(self.vat.uv_loop, fs, self.fd,
+                magic_fsClose_cb)
+
+
 fs_rename = rffi.llexternal("uv_fs_rename", [loop_tp, fs_tp, rffi.CCHARP,
                                              rffi.CCHARP, fs_cb],
                             rffi.INT, compilation_info=eci)
 fsRename = checking("fs_rename", fs_rename)
+
+
+def magic_fsRename(vat, src, dest):
+    fs = alloc_fs()
+    return Promise(MagicFSRenameCB(vat, fs, src, dest))
+
+
+class MagicFSRenameCB(Fn):
+    """Documentation for MagicFSRenameCB
+
+    """
+    def __init__(self, vat, fs, src, dest):
+        self.vat = vat
+        self.fs = fs
+        self.src = src
+        self.dest = dest
+
+    def run(self, resolver):
+        stashFS2(self.fs, (self, resolver))
+        fsRename(self.vat.uv_loop, self.fs, self.src, self.dest,
+                 magic_fsRename_cb)
+
+
+def magic_fsRename_cb(fs):
+    success = intmask(fs.c_result)
+    self, r = unstashFS2(fs)
+    if success < 0:
+        msg = formatError(success).decode("utf-8")
+        r.reject(msg)
+    else:
+        r.fulfill("")
+    fsDiscard(fs)
 
 
 def alloc_fs():
