@@ -14,7 +14,7 @@ class Resolver(object):
         self.target = target
         self.done = False
 
-    #@specialize.call_location()
+    @specialize.call_location()
     def fulfill(self, value):
         # aka 'resolve'
         if self.done:
@@ -39,8 +39,6 @@ class Resolver(object):
 class Promise(object):
     def __init__(self, fn):
         self.state = 0
-        self.result = (None, None, None)
-        self.chain = None
         self.handlers = []
         fn.run(Resolver(self))
 
@@ -54,12 +52,12 @@ class Promise(object):
             self.state = CHAINED
         else:
             self.state = FULFILLED
-        self.result = result
+        self.setResult(result)
         self.finale()
 
     def _reject(self, error):
         self.state = REJECTED
-        self.result = error
+        self.setResult(error)
         self.finale()
 
     def finale(self):
@@ -68,32 +66,48 @@ class Promise(object):
         del self.handlers[:]
 
     def _handle(self, handler):
-        while self.state == CHAINED and self.chain is not None:
-            self = self.chain
+        while self.state == CHAINED and self.getResult()[2] is not None:
+            self = self.getResult()[2]
         if self.state == PENDING:
             self.handlers.append(handler)
         else:
             try:
                 if self.state == FULFILLED:
                     handler.promise._resolve(
-                        handler.onFulfilled(self.result))
+                        handler.onFulfilled(self.getResult()))
                 else:
                     handler.promise._resolve(
-                        handler.onRejected(self.result))
+                        handler.onRejected(self.getResult()))
             except Exception as e:
                 handler.promise._reject((None, str(e).decode('utf-8'), None))
 
     def then(self, handler):
-        if handler.promise is not None:
-            raise ValueError("Pass fresh handler instances to Promise.then")
-        handler.promise = Promise(NoopFn())
         self._handle(handler)
         return handler.promise
 
 
+_promiseTypes = []
+def makeNewPromiseType(name):
+    import textwrap
+    exec textwrap.dedent("""
+    class _Promise(Promise):
+        def __init__(self, fn):
+            Promise.__init__(self, fn)
+            self.result_{0} = (None, None, None)
+        @specialize.call_location()
+        def setResult(self, result):
+            self.result_{0} = result
+        @specialize.call_location()
+        def getResult(self):
+            return self.result_{0}
+""".format(name))
+    _promiseTypes.append(_Promise)
+    return _Promise
+
+
 class Handler(object):
     def __init__(self):
-        self.promise = None
+        self.promise = Promise(NoopFn())
 
     def onFulfilled(self, result):
         return (None, None, None)

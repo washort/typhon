@@ -59,7 +59,7 @@ from typhon.objects.data import BytesObject, StrObject
 from typhon.objects.refs import makePromise
 from typhon.objects.signals import SignalHandle
 from typhon.objects.root import Object
-from typhon.rpromise import Handler
+from typhon.rpromise import Handler, makeNewPromiseType, NoopFn
 from typhon.vats import scopedVat
 
 ABORT_1 = getAtom(u"abort", 1)
@@ -342,10 +342,14 @@ class FileSource(Object):
         return False
 
 
+StreamReadPromise = makeNewPromiseType("StreamRead")
+
+
 class StreamReadHandler(Handler):
     def __init__(self, stream):
         Handler.__init__(self)
         self.stream = stream
+        self.promise = StreamReadPromise(NoopFn())
 
     def onFulfilled(self, result):
         value = result[0]

@@ -23,7 +23,7 @@ from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from typhon.log import log
 
 from typhon.objects.root import Object
-from typhon.rpromise import Fn, Promise
+from typhon.rpromise import Fn, makeNewPromiseType
 from typhon.vats import scopedVat
 
 
@@ -621,8 +621,11 @@ def alloc_shutdown():
     return lltype.malloc(cConfig["shutdown_t"], flavor="raw", zero=True)
 
 
+StreamWritePromise = makeNewPromiseType("StreamWrite")
+
+
 def magic_write(stream, data):
-    return Promise(MagicWriteCB(stream, data))
+    return StreamWritePromise(MagicWriteCB(stream, data))
 
 
 def magic_writeStreamCB(uv_write, status):
@@ -785,10 +788,12 @@ fs_read = rffi.llexternal("uv_fs_read", [loop_tp, fs_tp, rffi.INT,
                           rffi.INT, compilation_info=eci)
 fsRead = checking("fs_read", fs_read)
 
+FSOpenPromise = makeNewPromiseType("FSOpen")
+
 
 def magic_fsOpen(vat, path, flags, mode):
     fs = alloc_fs()
-    return Promise(MagicFSOpenCB(vat, fs, path, flags, mode))
+    return FSOpenPromise(MagicFSOpenCB(vat, fs, path, flags, mode))
 
 
 def magic_fsOpen_cb(fs):
@@ -817,9 +822,12 @@ class MagicFSOpenCB(Fn):
                magic_fsOpen_cb)
 
 
-def magic_fsRead(vat, fd=0):
+FSReadPromise = makeNewPromiseType("FSRead")
+
+
+def magic_fsRead(vat, fd):
     fs = alloc_fs()
-    return Promise(MagicFSReadCB(vat, fs, fd))
+    return FSReadPromise(MagicFSReadCB(vat, fs, fd))
 
 
 def magic_fsRead_cb(fs):
@@ -856,10 +864,12 @@ fs_write = rffi.llexternal("uv_fs_write", [loop_tp, fs_tp, rffi.INT,
                            rffi.INT, compilation_info=eci)
 fsWrite = checking("fs_write", fs_write)
 
+FSWritePromise = makeNewPromiseType("FSWrite")
+
 
 def magic_fsWrite(vat, fd, data):
     fs = alloc_fs()
-    return Promise(MagicFSWriteCB(vat, fs, fd, data))
+    return FSReadPromise(MagicFSWriteCB(vat, fs, fd, data))
 
 
 def magic_fsWrite_cb(fs):
@@ -892,8 +902,11 @@ class MagicFSWriteCB(Fn):
                 magic_fsWrite_cb)
 
 
+FSClosePromise = makeNewPromiseType("FSClose")
+
+
 def magic_fsClose(vat, fd):
-    return Promise(MagicFSCloseCB(vat, fd))
+    return FSClosePromise(MagicFSCloseCB(vat, fd))
 
 
 def magic_fsClose_cb(fs):
@@ -901,7 +914,7 @@ def magic_fsClose_cb(fs):
     size = intmask(fs.c_result)
     fsDiscard(fs)
     if size >= 0:
-        r.fulfill(None)
+        r.fulfill(0)
     else:
         r.reject(formatError(size).decode("utf-8"))
 
@@ -923,10 +936,11 @@ fs_rename = rffi.llexternal("uv_fs_rename", [loop_tp, fs_tp, rffi.CCHARP,
                             rffi.INT, compilation_info=eci)
 fsRename = checking("fs_rename", fs_rename)
 
+FSRenamePromise = makeNewPromiseType("FSRename")
 
 def magic_fsRename(vat, src, dest):
     fs = alloc_fs()
-    return Promise(MagicFSRenameCB(vat, fs, src, dest))
+    return FSRenamePromise(MagicFSRenameCB(vat, fs, src, dest))
 
 
 class MagicFSRenameCB(Fn):

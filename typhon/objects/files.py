@@ -29,7 +29,7 @@ from typhon.objects.constants import NullObject
 from typhon.objects.data import BytesObject, StrObject, unwrapStr
 from typhon.objects.refs import LocalResolver, makePromise
 from typhon.objects.root import Object, runnable
-from typhon.rpromise import Handler
+from typhon.rpromise import Handler, Result, makeNewPromiseType, NoopFn
 from typhon.vats import currentVat, scopedVat
 
 
@@ -94,7 +94,7 @@ class GetContents(Object):
         buf = "".join(self.pieces)
         bo = BytesObject(buf)
         self.resolver.resolve(bo)
-        return (None, None, None)
+        return (buf, None, None)
 
     def fail(self, reason):
         # Clean up libuv stuff.
@@ -111,9 +111,13 @@ class GetContents(Object):
         return (None, None, p)
 
 
+FileReadPromise = makeNewPromiseType("FileRead")
+
+
 class FsReadHandler(Handler):
     def __init__(self, reader):
         Handler.__init__(self)
+        self.promise = FileReadPromise(NoopFn())
         self.reader = reader
 
     def onFulfilled(self, result):
@@ -163,10 +167,13 @@ class SetContents(Object):
         # And issuing the rename is surprisingly straightforward.
         p = self.src.rename(self.dest.asBytes())
         self.resolver.resolve(p)
+        return ("", None, None)
 
+SetContentsPromise = makeNewPromiseType("SetContents")
 
 class SetContentsHandler(Handler):
     def __init__(self, sc):
+        self.promise = SetContentsPromise(NoopFn())
         self.sc = sc
 
     def onFulfilled(self, result):
@@ -195,12 +202,15 @@ class CloseSetContentsHandler(Handler):
         self.sc.fail(u"libuv error: " + err[1])
 
 
+OpenGetContentsPromise = makeNewPromiseType("OpenGetContents")
+
+
 class OpenGetContents(Handler):
     """Documentation for OpenGetContents
 
     """
     def __init__(self, vat, monteResolver):
-        Handler.__init__(self)
+        self.promise = OpenGetContentsPromise(NoopFn())
         self.vat = vat
         self.monteResolver = monteResolver
 
@@ -216,9 +226,12 @@ class OpenGetContents(Handler):
         return err
 
 
+OpenSetContentsPromise = makeNewPromiseType("OpenSetContents")
+
+
 class OpenSetContents(Handler):
     def __init__(self, vat, data, r, sibling, fileObj):
-        Handler.__init__(self)
+        self.promise = OpenSetContentsPromise(NoopFn())
         self.vat = vat
         self.data = data
         self.r = r
@@ -237,13 +250,18 @@ class OpenSetContents(Handler):
         return (None, u"Couldn't open file fount: " + err[1], None)
 
 
+RenamePromise = makeNewPromiseType("Rename")
+
+
 class RenameHandler(Handler):
     def __init__(self, monteResolver):
-        Handler.__init__(self)
+        self.promise = RenamePromise(NoopFn())
         self.monteResolver = monteResolver
+
     def onFulfilled(self, result):
         self.monteResolver.resolve(NullObject)
-        return (None, None, None)
+        return ("", None, None)
+
     def onRejected(self, err):
         self.monteResolver.smash(StrObject(u"Couldn't rename file: %s" % err[1]))
         return (None, None, None)
