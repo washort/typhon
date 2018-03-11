@@ -400,12 +400,7 @@ class FileSink(Object):
         if self.closed:
             raise userError(u"run/1: Couldn't write to closged file")
 
-        sb = ruv.scopedBufs([data], self)
-        bufs = sb.allocate()
-        fs = ruv.alloc_fs()
-        ruv.stashFS(fs, (self._vat, sb))
-        ruv.fsWrite(self._vat.uv_loop, fs, self._fd, bufs, 1, -1,
-                    writeFileCB)
+        ruv.magic_fsWrite(self._vat, self._fd, data).then(WriteFileHandler(self))
 
     @method("Void")
     def complete(self):
