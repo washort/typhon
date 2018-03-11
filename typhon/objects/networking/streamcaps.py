@@ -235,13 +235,8 @@ class StreamSink(Object):
     def run(self, data):
         if self.closed:
             raise userError(u"run/1: Couldn't send to closed stream")
-
+        ruv.magic_write(self._stream._stream, data)
         # XXX backpressure?
-        uv_write = ruv.alloc_write()
-        sb = ruv.scopedBufs([data], self)
-        bufs = sb.allocate()
-        ruv.stashWrite(uv_write, (self._vat, sb))
-        ruv.write(uv_write, self._stream._stream, bufs, 1, writeStreamCB)
 
     @method("Void")
     def complete(self):
@@ -423,3 +418,16 @@ class FileSink(Object):
     @method("Bool")
     def isATTY(self):
         return False
+
+
+class WriteFileHandler(Handler):
+    def __init__(self, sink):
+        self.sink = sink
+
+    def onFulfilled(self, result):
+        assert isinstance(result[0], int)
+        return result
+
+    def onRejected(self, err):
+        self.sink.abort(StrObject(u"libuv error: %s" % err[1]))
+        return err

@@ -329,7 +329,6 @@ def allocCB(handle, size, buf):
 
 
 class scopedBufs(Object):
-
     def __init__(self, data, obj):
         self.obj = obj
         self.data = data
@@ -357,6 +356,12 @@ class scopedBufs(Object):
             rffi.free_nonmovingbuffer(datum, charp, flag)
         self.scoping.__exit__()
 
+
+class scopedBufsR(scopedBufs):
+    def __init__(self, data, r):
+        self.r = r
+        self.data = data
+        self.scoping = lltype.scoped_alloc(rffi.CArray(buf_t), len(self.data))
 
 (HANDLE_ASYNC, HANDLE_CHECK, HANDLE_FS_EVENT, HANDLE_FS_POLL, HANDLE_HANDLE,
  HANDLE_IDLE, HANDLE_NAMED_PIPE, HANDLE_POLL, HANDLE_PREPARE, HANDLE_PROCESS,
@@ -630,7 +635,7 @@ def magic_write(stream, data):
 
 def magic_writeStreamCB(uv_write, status):
     self, sb = unstashWrite(uv_write)
-    r = sb.obj
+    r = sb.r
     sb.deallocate()
     r.fulfill(None)
 
@@ -642,7 +647,7 @@ class MagicWriteCB(Fn):
 
     def run(self, r):
         uv_write = alloc_write()
-        sb = scopedBufs([self.data], r)
+        sb = scopedBufsR([self.data], r)
         bufs = sb.allocate()
         stashWrite(uv_write, (self, sb))
         write(uv_write, self.stream, bufs, 1, magic_writeStreamCB)
@@ -874,7 +879,7 @@ def magic_fsWrite(vat, fd, data):
 
 def magic_fsWrite_cb(fs):
     self, sb = unstashFS3(fs)
-    r = sb.obj
+    r = sb.r
     size = intmask(fs.c_result)
     fsDiscard(fs)
     sb.deallocate()
@@ -895,7 +900,7 @@ class MagicFSWriteCB(Fn):
         self.data = data
 
     def run(self, r):
-        sb = scopedBufs([self.data], r)
+        sb = scopedBufsR([self.data], r)
         stashFS3(self.fs, (self, sb))
         bufs = sb.allocate()
         fsWrite(self.vat.uv_loop, self.fs, self.fd, bufs, 1, -1,
